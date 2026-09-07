@@ -1,0 +1,301 @@
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import { readFile } from "node:fs/promises";
+import { z } from "zod";
+import type { Db } from "./db.js";
+import {
+  ApiError,
+  authenticate,
+  requireCommissioner,
+  requireLeague,
+  type Principal,
+} from "./auth.js";
+import {
+  LeagueService,
+  leagueCommandSchema,
+  LeagueError,
+} from "./league/index.js";
+import { RuntimeStore, RuntimeError } from "./runtime/index.js";
+import { ScheduleSchema, MessageSchema } from "./runtime/worker.js";
+import {
+  GovernanceService,
+  governanceCommandSchema,
+} from "./governance/index.js";
+import { ScoreboardService } from "./scoring/index.js";
+import { DataDispatcher } from "./data/dispatcher.js";
+
+async function body(req: IncomingMessage): Promise<unknown> {
+  if (!req.headers["content-type"]?.startsWith("application/json"))
+    throw new ApiError(415, "JSON_REQUIRED", "Use application/json.");
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 1_048_576)
+      throw new ApiError(
+        413,
+        "BODY_TOO_LARGE",
+        "Request exceeds one megabyte.",
+      );
+    chunks.push(chunk);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new ApiError(400, "INVALID_JSON", "Request body is not valid JSON.");
+  }
+}
+function reply(res: ServerResponse, status: number, value: unknown) {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(value));
+}
+export function createApiServer(db: Db) {
+  const league = new LeagueService(db),
+    runtime = new RuntimeStore(db),
+    governance = new GovernanceService(db),
+    scoreboard = new ScoreboardService(db),
+    dispatcher = new DataDispatcher(db);
+  async function binding(actor: Principal, agentId: string, ownerOnly = false) {
+    const row = (
+      await db.query(
+        "SELECT b.*,t.owner_id FROM runtime_bindings b JOIN league_teams t ON t.league_id=b.league_id AND t.id=b.team_id WHERE b.agent_id=$1 AND b.league_id=$2",
+        [agentId, actor.leagueId],
+      )
+    ).rows[0];
+    if (
+      !row ||
+      (actor.role === "owner" &&
+        (row.team_id !== actor.teamId || row.owner_id !== actor.id)) ||
+      (ownerOnly && actor.role !== "owner")
+    )
+      throw new ApiError(
+        403,
+        "AGENT_FORBIDDEN",
+        "This credential does not control that franchise.",
+      );
+    return row;
+  }
+  return createServer(async (req, res) => {
+    res.setHeader("cache-control", "no-store");
+    res.setHeader("x-content-type-options", "nosniff");
+    res.setHeader("referrer-policy", "no-referrer");
+    res.setHeader(
+      "content-security-policy",
+      "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    );
+    try {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      if (req.method === "GET" && url.pathname === "/favicon.ico") {
+        res.writeHead(204);
+        return res.end();
+      }
+      if (req.method === "GET" && url.pathname === "/health") {
+        await db.query("SELECT 1");
+        return reply(res, 200, {
+          status: "ok",
+          mode: "local-foundation",
+          liveLeague: false,
+        });
+      }
+      const staticFiles: Record<string, string> = {
+        "/": "index.html",
+        "/app.js": "app.js",
+        "/style.css": "style.css",
+        "/play": "play.html",
+        "/play.js": "play.js",
+      };
+      if (req.method === "GET" && staticFiles[url.pathname]) {
+        const path = staticFiles[url.pathname];
+        const data = await readFile(
+          new URL("../public/" + path, import.meta.url),
+        );
+        res.writeHead(200, {
+          "content-type": path.endsWith(".html")
+            ? "text/html; charset=utf-8"
+            : path.endsWith(".js")
+              ? "text/javascript; charset=utf-8"
+              : "text/css; charset=utf-8",
+        });
+        return res.end(data);
+      }
+      const actor = await authenticate(db, req.headers.authorization);
+      if (req.method === "GET" && url.pathname === "/v1/me") {
+        if (
+          actor.role === "owner" &&
+          !(
+            await db.query(
+              "SELECT 1 FROM league_teams WHERE league_id=$1 AND id=$2 AND owner_id=$3",
+              [actor.leagueId, actor.teamId, actor.id],
+            )
+          ).rowCount
+        )
+          throw new ApiError(
+            403,
+            "OWNER_CHANGED",
+            "This credential no longer owns its franchise.",
+          );
+        const peerBindings = (
+          await db.query(
+            'SELECT team_id AS "teamId",agent_id AS "agentId" FROM runtime_bindings WHERE league_id=$1',
+            [actor.leagueId],
+          )
+        ).rows;
+        return reply(res, 200, {
+          ...actor,
+          agentId:
+            peerBindings.find((b) => b.teamId === actor.teamId)?.agentId ??
+            null,
+          peerBindings,
+        });
+      }
+      if (req.method === "POST" && url.pathname === "/v1/governance/commands") {
+        const command = governanceCommandSchema.parse(await body(req));
+        requireLeague(actor, command.leagueId);
+        return reply(res, 200, await governance.execute(actor, command));
+      }
+      const meetingPath = url.pathname.match(
+        /^\/v1\/governance\/meetings\/([^/]+)$/,
+      );
+      if (req.method === "GET" && meetingPath)
+        return reply(
+          res,
+          200,
+          await governance.snapshot(actor, decodeURIComponent(meetingPath[1])),
+        );
+      const scorePath = url.pathname.match(
+        /^\/v1\/leagues\/([^/]+)\/scores\/(\d+)$/,
+      );
+      if (req.method === "GET" && scorePath) {
+        const leagueId = decodeURIComponent(scorePath[1]);
+        requireLeague(actor, leagueId);
+        return reply(
+          res,
+          200,
+          await scoreboard.snapshot(leagueId, Number(scorePath[2])),
+        );
+      }
+      if (req.method === "POST" && url.pathname === "/v1/subscriptions") {
+        const input = z
+          .object({
+            agentId: z.string().min(1),
+            feedId: z.string().min(1),
+            playerId: z.string().min(1),
+            enabled: z.boolean().optional(),
+          })
+          .strict()
+          .parse(await body(req));
+        await binding(actor, input.agentId, true);
+        return reply(res, 200, await dispatcher.subscribe(actor, input));
+      }
+      if (req.method === "POST" && url.pathname === "/v1/commands") {
+        const command = leagueCommandSchema.parse(await body(req));
+        requireLeague(actor, command.leagueId);
+        return reply(res, 200, await league.execute(actor, command));
+      }
+      const statePath = url.pathname.match(/^\/v1\/leagues\/([^/]+)$/);
+      if (req.method === "GET" && statePath) {
+        const leagueId = decodeURIComponent(statePath[1]);
+        requireLeague(actor, leagueId);
+        return reply(res, 200, await league.snapshot(leagueId, actor));
+      }
+      const agentPath = url.pathname.match(
+        /^\/v1\/agents\/([^/]+)(?:\/(appointments|messages))?$/,
+      );
+      if (agentPath) {
+        const agentId = decodeURIComponent(agentPath[1]);
+        await binding(actor, agentId, req.method === "POST");
+        if (req.method === "GET" && !agentPath[2])
+          return reply(res, 200, await runtime.agentSnapshot(agentId));
+        if (req.method === "POST" && agentPath[2] === "appointments")
+          return reply(
+            res,
+            200,
+            await runtime.scheduleSelf(
+              agentId,
+              ScheduleSchema.parse(await body(req)),
+            ),
+          );
+        if (req.method === "POST" && agentPath[2] === "messages") {
+          const input = MessageSchema.parse(await body(req));
+          const recipient = (
+            await db.query(
+              "SELECT 1 FROM runtime_bindings WHERE agent_id=$1 AND league_id=$2",
+              [input.recipientId, actor.leagueId],
+            )
+          ).rowCount;
+          if (!recipient)
+            throw new ApiError(
+              403,
+              "PEER_FORBIDDEN",
+              "Recipient is not in this league.",
+            );
+          return reply(res, 200, await runtime.sendMessage(agentId, input));
+        }
+      }
+      if (req.method === "GET" && url.pathname === "/v1/operations") {
+        requireCommissioner(actor);
+        const bindings = (
+          await db.query(
+            "SELECT agent_id FROM runtime_bindings WHERE league_id=$1",
+            [actor.leagueId],
+          )
+        ).rows;
+        const ids = new Set(bindings.map((x) => x.agent_id));
+        const all = await runtime.snapshot();
+        const value = {
+          ...all,
+          agents: all.agents.filter((x: any) => ids.has(x.id)),
+          jobs: all.jobs.filter((x: any) => ids.has(x.agent_id)),
+          messages: all.messages.filter(
+            (x: any) => ids.has(x.sender_id) && ids.has(x.recipient_id),
+          ),
+          receipts: all.receipts.filter((x: any) => ids.has(x.agent_id)),
+          reservations: all.reservations.filter((x: any) =>
+            ids.has(x.agent_id),
+          ),
+        };
+        return reply(res, 200, {
+          mode: "local-foundation",
+          liveModelCanaries: 0,
+          league: await league.snapshot(actor.leagueId, actor),
+          runtime: value,
+        });
+      }
+      throw new ApiError(404, "NOT_FOUND", "Route does not exist.");
+    } catch (error) {
+      if (error instanceof z.ZodError)
+        return reply(res, 400, {
+          error: "INVALID_REQUEST",
+          details: error.issues.map((x) => ({
+            path: x.path,
+            message: x.message,
+          })),
+        });
+      if (error instanceof ApiError)
+        return reply(res, error.status, {
+          error: error.code,
+          message: error.message,
+        });
+      const code = (error as any)?.code;
+      if (error instanceof LeagueError || error instanceof RuntimeError)
+        return reply(
+          res,
+          code === "FORBIDDEN" ? 403 : code === "NOT_FOUND" ? 404 : 409,
+          { error: code, message: error.message },
+        );
+      // Never echo SQL, credential material, or provider response bodies to a caller.
+      console.error(
+        "API request failed:",
+        error instanceof Error ? error.name : "UnknownError",
+      );
+      return reply(res, 500, {
+        error: "INTERNAL_ERROR",
+        message:
+          "Request failed; no success receipt was returned. Retry only with the same idempotency key.",
+      });
+    }
+  });
+}

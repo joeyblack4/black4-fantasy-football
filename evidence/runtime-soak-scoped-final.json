@@ -1,0 +1,28 @@
+{
+  "synthetic": true,
+  "codeHash": "187d1d1b42d8ff6cd63401ed5b6cdae97190ba792a76c16b1cb1b1a8f99e5bce",
+  "codeFiles": [
+    "index.ts",
+    "worker.ts",
+    "football-schema.ts",
+    "football-outbox.ts"
+  ],
+  "isolatedSchema": "test_d55c408380c64424815a0e5642cdbf74",
+  "completedDuration": true,
+  "stoppedBySignal": false,
+  "driver": "DETERMINISTIC_TEST_DRIVER",
+  "startedAt": "2026-09-07T21:11:57.453Z",
+  "sampledAt": "2026-09-07T21:21:57.572Z",
+  "elapsedMs": 600119,
+  "durationMs": 600000,
+  "final": true,
+  "loops": 5605,
+  "completed": 2803,
+  "staleFenced": 30,
+  "leaseRecoveries": 30,
+  "messages": 1402,
+  "errors": [],
+  "jobs": 2805,
+  "receipts": 18282,
+  "scope": "Local PostgreSQL scheduler, messaging and wallet reliability only; no evidence of LLM initiative or Buzz delivery."
+}

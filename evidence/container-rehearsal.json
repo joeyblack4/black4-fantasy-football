@@ -1,0 +1,15 @@
+{
+  "synthetic": true,
+  "verifiedAt": "2026-09-07T21:33:50.350984+00:00",
+  "build": "passed npm ci and TypeScript check",
+  "startup": "fresh local PostgreSQL17/API/test-worker compose stack",
+  "trigger": "authenticated appointment, then worker container restart before due time",
+  "readback": {
+    "teams": 12,
+    "picks": 36,
+    "appointmentStatus": "completed",
+    "appointmentAttempts": 1,
+    "appointmentRows": 1
+  },
+  "scope": "Local container persistence only; no real model or remote uptime claim"
+}

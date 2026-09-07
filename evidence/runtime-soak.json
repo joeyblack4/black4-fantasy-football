@@ -1,0 +1,18 @@
+{
+  "synthetic": true,
+  "driver": "DETERMINISTIC_TEST_DRIVER",
+  "startedAt": "2026-09-07T20:44:05.285Z",
+  "sampledAt": "2026-09-07T21:14:05.486Z",
+  "elapsedMs": 1800201,
+  "durationMs": 1800000,
+  "final": true,
+  "loops": 16846,
+  "completed": 8430,
+  "staleFenced": 91,
+  "leaseRecoveries": 91,
+  "messages": 4215,
+  "errors": [],
+  "jobs": 8431,
+  "receipts": 38118,
+  "scope": "Local PostgreSQL scheduler, messaging and wallet reliability only; no evidence of LLM initiative or Buzz delivery."
+}

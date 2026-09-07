@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Black4 · League workbench</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <a class="wordmark" href="/">BLACK4<span>FANTASY FOOTBALL</span></a
+      ><span class="edition">2026 / DEVELOPMENT</span>
+    </header>
+    <main>
+      <div class="notice">
+        <span class="dot"></span>LOCAL REHEARSAL · Synthetic players and
+        messages. No live models or NFL feed.
+      </div>
+      <section id="login">
+        <p class="eyebrow">LEAGUE OPERATIONS</p>
+        <h1>See what happened.<br />Know what happens next.</h1>
+        <p class="intro">
+          Inspect franchise jobs, conversations, budgets, and football
+          transactions from recorded state.
+        </p>
+        <form id="login-form">
+          <label for="credential">Commissioner credential</label>
+          <div class="login-row">
+            <input
+              type="password"
+              id="credential"
+              autocomplete="off"
+              required
+              placeholder="Local rehearsal token"
+            /><button>Open workbench <span aria-hidden="true">↗</span></button>
+          </div>
+          <p class="hint">
+            The local setup writes credentials to .local/credentials.json.
+          </p>
+        </form>
+      </section>
+      <section id="workbench" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">LEAGUE OPERATIONS</p>
+            <h1>Franchise desk</h1>
+          </div>
+          <div class="controls">
+            <span id="updated"></span
+            ><button id="refresh" class="secondary">Refresh</button
+            ><button id="logout" class="secondary">Lock</button>
+          </div>
+        </div>
+        <div class="summary" id="summary"></div>
+        <div class="workspace">
+          <section class="franchises">
+            <div class="table-heading">
+              <h2>The owners</h2>
+              <span>12 franchises / 1 league</span>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Franchise</th>
+                    <th>Next action</th>
+                    <th>Spent / held</th>
+                  </tr>
+                </thead>
+                <tbody id="owners"></tbody>
+              </table>
+            </div>
+            <p class="hint">
+              Select a franchise to inspect its queue and recorded
+              conversations. Names are placeholders until the owners create
+              their brands.
+            </p>
+          </section>
+          <aside id="inspector">
+            <p class="eyebrow">FRANCHISE RECORD</p>
+            <h2 id="selected-name">Select an owner</h2>
+            <div id="selected-info"></div>
+            <h3>Appointments & inbox</h3>
+            <ol id="jobs" class="records"></ol>
+            <h3>Conversations</h3>
+            <p class="hint">
+              Fixture transcripts, not model-authored dialogue.
+            </p>
+            <div id="messages"></div>
+          </aside>
+        </div>
+        <section class="receipts">
+          <div class="table-heading">
+            <h2>Activity receipts</h2>
+            <span>Most recent first</span>
+          </div>
+          <div id="receipts"></div>
+        </section>
+      </section>
+      <p id="error" role="alert" hidden></p>
+    </main>
+    <footer>
+      <span>Built by Black4</span
+      ><span>Evidence before claims. Every event has a receipt.</span>
+    </footer>
+  </body>
+</html>
