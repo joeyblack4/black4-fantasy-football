@@ -65,7 +65,7 @@ export const GovernanceReadSchema = z.discriminatedUnion("view", [
     .strict(),
 ]);
 const governanceReadInstruction =
-  "governance_state {} returns a compact summary. Follow nextOffset with view:summary to read every visible proposal. Choices and hashes are exact; rationale and leaguePolicies are omitted from summaries explicitly. Before endorsing or voting, retrieve the exact candidate with view:proposal and proposalId. If tooLarge, read section:rationale, section:leaguePolicies, or section:content, following nextOffset until hasMore=false. Section offsets count Unicode code points; content pages are exact JSON fragments, not summaries. Use view:menu for full native options, or questionId/optionId to narrow; section:content pages an oversized menu. Sealed peer proposals remain unavailable.";
+  "governance_state {} returns a compact summary. Follow nextOffset with view:summary to read every visible proposal. Choices and hashes are exact; rationale and leaguePolicies are omitted from summaries explicitly. Before endorsing or voting, retrieve the exact candidate with view:proposal and proposalId. If tooLarge, read section:rationale, section:leaguePolicies, or section:content, following nextOffset until hasMore=false. Section offsets count Unicode code points; content pages are exact JSON fragments, not summaries. Use view:menu for full native options, or questionId/optionId to narrow; section:content pages an oversized menu. Sealed peer proposals remain unavailable. Votes are immutable per proposal, not per meeting; you may independently approve multiple exact candidates. A castVote receipt is required before claiming a ballot recorded.";
 const encodedBytes = (value: unknown) =>
   Buffer.byteLength(JSON.stringify(value));
 const projectionBudget = 20500;
@@ -311,12 +311,12 @@ function phaseInstruction(stage: string) {
         ? "Read governance_state peer proposals and buzz_read. Post your actual choices and rationale; negotiate one consolidated candidate. Before cutoff, revise your own proposal with a fresh ID/version and replacesProposalId; never edit or invent another owner's work."
         : stage === "closed"
           ? "Read recorded outcomes. Commissioner ratification/application remains required. Do not start the draft or claim consensus."
-          : "Read final candidates and actual votes. Cast only your own ballot on the exact agreed candidate via governance. Chat is not a vote; recorded votes are immutable.";
+          : "Read final candidates and actual votes. Cast only your own ballot on the exact agreed candidate via governance. Chat is not a vote. Votes are immutable per proposal, not per meeting: you may independently vote YES on more than one exact candidate. An existing YES on one proposal does not prevent voting on another; never change a prior vote on the same proposal. Submit your own castVote action on each exact proposal you support and require its actual receipt before claiming it recorded.";
   return (
     task +
     " " +
     governanceReadInstruction +
-    " Goals: win the league and learn useful human/agent collaboration. Rewards are nonmonetary; in-season compute budgets stay unchanged. Human last-place consequences require individual opt-in; absent Chris has no proxy vote. Defer large SVG/content production until rules finish. Old Buzz tool-unavailable posts are historical; current trusted context and your own fresh tool receipts govern availability. Shared search credits are a paid internal allocation, not free resources. Database receipt completion times are authoritative over model-authored timestamps. Stay within meeting turns/spend."
+    " Goals: win the league and learn useful human/agent collaboration. Rewards are nonmonetary; in-season compute budgets stay unchanged. Human last-place consequences require individual opt-in; absent Chris has no proxy vote. Defer large SVG/content production until rules finish. Old Buzz tool-unavailable posts are historical; current trusted context and your own fresh tool receipts govern availability. Shared search credits are a paid internal allocation, not free resources. Database receipt completion times are authoritative over model-authored timestamps. Turn usage includes this currently allocated turn. Even when usage equals the turn cap, you may read and return authorized actions during this live job; the cap prevents allocating another ordinary turn, not acting in this one. Stay within meeting spend and reservation limits."
   );
 }
 async function consumption(
@@ -358,12 +358,13 @@ export async function reserveConventionTurn(
     )
   ).rows[0];
   if (!row) return;
-  const mode = (
-    await tx.query("SELECT execution_mode FROM runtime_jobs WHERE id=$1", [
-      job.id,
-    ])
-  ).rows[0]?.execution_mode;
-  if (mode === "provider_canary") return;
+  const persistedJob = (
+    await tx.query(
+      "SELECT execution_mode,kind,causal_id,payload,agent_id,fence,status FROM runtime_jobs WHERE id=$1",
+      [job.id],
+    )
+  ).rows[0];
+  if (persistedJob?.execution_mode === "provider_canary") return;
   await assertConventionNotPaused(tx, row.league_id, row.meeting_id);
   const host = await getFootballHost(tx, row.league_id);
   check(
@@ -384,7 +385,34 @@ export async function reserveConventionTurn(
       : current === "voting"
         ? limits.votingTurns
         : limits.closedTurns;
-  check((used.turns[current] ?? 0) < maxTurns, "CONVENTION_TURN_LIMIT");
+  const recovery =
+    current === "voting" &&
+    persistedJob?.kind === "event" &&
+    persistedJob.agent_id === job.agentId &&
+    persistedJob.fence === job.fence &&
+    persistedJob.status === "running" &&
+    persistedJob.causal_id === `convention:${row.meeting_id}:voting-recovery` &&
+    persistedJob.payload?.kind === "governance.phase" &&
+    persistedJob.payload?.meetingId === row.meeting_id &&
+    persistedJob.payload?.wave === "voting-recovery" &&
+    persistedJob.payload?.phase === "voting" &&
+    !!(
+      await tx.query(
+        "SELECT 1 FROM runtime_convention_waves w WHERE w.league_id=$1 AND w.meeting_id=$2 AND w.wave='voting-recovery' AND w.status='dispatched' AND w.expires_at>clock_timestamp() AND EXISTS(SELECT 1 FROM runtime_convention_control_receipts r WHERE r.league_id=w.league_id AND r.response->>'meetingId'=w.meeting_id AND r.response->>'recoveryVotingTurn'='true' AND (r.response->'recoveryOwners') ? $3)",
+        [row.league_id, row.meeting_id, job.agentId],
+      )
+    ).rowCount;
+  if (recovery)
+    check(
+      !(
+        await tx.query(
+          "SELECT 1 FROM runtime_convention_turns WHERE job_id=$1",
+          [job.id],
+        )
+      ).rowCount,
+      "CONVENTION_RECOVERY_TURN_ALREADY_ALLOCATED",
+    );
+  else check((used.turns[current] ?? 0) < maxTurns, "CONVENTION_TURN_LIMIT");
   const futureWaves = Number(
     (
       await tx.query(
@@ -394,7 +422,7 @@ export async function reserveConventionTurn(
     ).rows[0].n,
   );
   check(
-    (used.turns[current] ?? 0) + futureWaves < maxTurns,
+    recovery || (used.turns[current] ?? 0) + futureWaves < maxTurns,
     "CONVENTION_TURNS_RESERVED_FOR_WAVES",
   );
   check(
@@ -615,10 +643,25 @@ export class ConventionRuntime {
         }
         const owners = (
           await tx.query(
-            "SELECT agent_id FROM runtime_bindings WHERE league_id=$1 ORDER BY agent_id",
-            [leagueId],
+            "SELECT b.agent_id FROM runtime_bindings b JOIN runtime_agents a ON a.id=b.agent_id WHERE b.league_id=$1 AND ($2::text<>'voting-recovery' OR a.kind='ai') ORDER BY b.agent_id",
+            [leagueId, wave.wave],
           )
         ).rows;
+        if (wave.wave === "voting-recovery") {
+          const grant = (
+            await tx.query(
+              "SELECT response FROM runtime_convention_control_receipts WHERE league_id=$1 AND response->>'meetingId'=$2 AND response->>'recoveryVotingTurn'='true'",
+              [leagueId, wave.meeting_id],
+            )
+          ).rows;
+          check(
+            grant.length === 1 &&
+              owners.length === 10 &&
+              JSON.stringify(owners.map((o) => o.agent_id).sort()) ===
+                JSON.stringify([...grant[0].response.recoveryOwners].sort()),
+            "CONVENTION_RECOVERY_OWNER_SCOPE_CHANGED",
+          );
+        }
         for (const owner of owners)
           await this.runtime.ingestEventTx(tx, {
             agentId: owner.agent_id,
@@ -631,6 +674,17 @@ export class ConventionRuntime {
               wave: wave.wave,
               synthetic: wave.synthetic,
               instruction: phaseInstruction(wave.wave),
+              ...(wave.wave === "voting-recovery"
+                ? {
+                    recovery: {
+                      commonToAllAiOwners: true,
+                      additionalAllocatedTurns: 1,
+                      moneyLimitsUnchanged: true,
+                      reason:
+                        "Clarify current-turn permission and immutable per-proposal ballots; independently assess exact candidates. All original ballots remain unchanged. The original spend and per-request reservation caps remain unchanged.",
+                    },
+                  }
+                : {}),
             },
           });
         await tx.query(
@@ -649,6 +703,7 @@ export class ConventionRuntime {
   async context(
     agentId: string,
     request = GovernanceReadSchema.parse({ view: "summary" }),
+    currentJob?: Job,
   ) {
     const b = (
       await this.db.query(
@@ -670,13 +725,42 @@ export class ConventionRuntime {
       row.meeting_id,
     );
     if (pause) row.now = pause.paused_at;
+    const allocatedTurn =
+      currentJob?.agentId === agentId
+        ? (
+            await this.db.query(
+              "SELECT t.job_id,t.fence,j.causal_id FROM runtime_convention_turns t JOIN runtime_jobs j ON j.id=t.job_id AND j.fence=t.fence JOIN runtime_agents a ON a.id=j.agent_id JOIN runtime_reservations r ON r.job_id=t.job_id AND r.fence=t.fence WHERE t.league_id=$1 AND t.meeting_id=$2 AND t.agent_id=$3 AND j.id=$4 AND j.fence=$5 AND j.worker_id=$6 AND a.model=$7 AND a.enabled AND j.status='running' AND j.lease_until>clock_timestamp() AND r.status='reserved'",
+              [
+                b.league_id,
+                row.meeting_id,
+                agentId,
+                currentJob.id,
+                currentJob.fence,
+                currentJob.workerId,
+                currentJob.model,
+              ],
+            )
+          ).rows[0]
+        : undefined;
     return {
+      currentTurn: {
+        allocated: !!allocatedTurn,
+        canCommitActionsWithinCurrentTurn: !!allocatedTurn && !pause,
+        jobId: allocatedTurn?.job_id ?? null,
+        recovery:
+          allocatedTurn?.causal_id ===
+          `convention:${row.meeting_id}:voting-recovery`,
+      },
       status: pause ? "paused" : "managed",
       pause,
       meetingId: row.meeting_id,
       phase: phase(row, row.now),
       limits: row.limits,
       usage: await consumption(this.db, row.league_id, row.meeting_id, agentId),
+      turnUsageSemantics:
+        "Includes the currently reserved job. Reaching the cap does not forbid actions within that allocated job; it blocks new ordinary allocations.",
+      ballotSemantics:
+        "Immutable per proposal. You may independently approve multiple exact candidates; a prior YES on another proposal does not prevent a new castVote. Only an actual action receipt proves recording.",
       governance: projectGovernanceSnapshot(
         await this.governance.snapshot(
           {
@@ -745,7 +829,7 @@ export function createGovernanceReadTools(
           ...object,
         });
         await scope(job);
-        const result = await convention.context(job.agentId, request);
+        const result = await convention.context(job.agentId, request, job);
         await scope(job);
         return result;
       },

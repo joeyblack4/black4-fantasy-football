@@ -398,3 +398,288 @@ it("binds candidate timestamps in frozen content and refuses a running job", asy
     }),
   ).rejects.toThrow("CONTENT_CHANGED");
 });
+
+async function votingFixture() {
+  for (const table of ["mfl_governance_meetings", "runtime_conventions"])
+    await f.db.query(
+      `UPDATE ${table} SET discussion_opens_at=clock_timestamp()-interval '2 seconds',proposal_deadline=clock_timestamp()-interval '1 second',vote_deadline=clock_timestamp()+interval '2 minutes'`,
+    );
+  await f.db.query(
+    "UPDATE runtime_convention_waves SET status='dispatched',completed_at=clock_timestamp() WHERE phase<>'closed'",
+  );
+}
+async function allocateOrdinaryTurn(causalId: string, costMicros = 1) {
+  await store.ingestEvent({
+    agentId: "agent0",
+    causalId,
+    payload: { kind: "synthetic" },
+  });
+  const job = (await store.claim("synthetic-worker", 30000, undefined, [
+    "agent0",
+  ]))!;
+  const reservationId = await store.reserve(job, 100);
+  await store.complete(job, {
+    actions: [],
+    summary: "Synthetic allocation",
+    costMicros,
+    reservationId,
+    driver: "TEST",
+    synthetic: true,
+  });
+}
+it("grants exactly one common recovery turn with unchanged money and ballots, sufficient time, and honest current allocation context", async () => {
+  await votingFixture();
+  await f.db.query("UPDATE runtime_agents SET enabled=true WHERE id='agent0'");
+  await allocateOrdinaryTurn("old-1");
+  await allocateOrdinaryTurn("old-2");
+  await gov.execute(owner(0), {
+    type: "castVote",
+    leagueId,
+    idempotencyKey: "prior-yes",
+    proposalId: "proposal-0",
+    choice: "yes",
+  });
+  await f.db.query("UPDATE runtime_agents SET enabled=false");
+  const originalLimits = (
+    await f.db.query("SELECT limits FROM runtime_conventions")
+  ).rows[0].limits;
+  const originalBallots = (
+    await f.db.query(
+      "SELECT * FROM mfl_governance_votes ORDER BY proposal_id,team_id",
+    )
+  ).rows;
+  const p: any = await control.pause(actor, pauseRequest);
+  const request = {
+    pauseId: p.pauseId,
+    idempotencyKey: "recovery",
+    reason: "Equal correction of turn and per-proposal voting semantics",
+  };
+  const r: any = await control.resumeVotingRecovery(actor, request);
+  expect(r.recoveryVotingTurn).toBe(true);
+  expect(r.recoveryOwners).toHaveLength(10);
+  expect(r.recoveryExtensionMs).toBeGreaterThan(470000);
+  expect(
+    new Date(r.deadlines.voteDeadline).getTime() - Date.parse(r.resumedAt),
+  ).toBeGreaterThanOrEqual(600000);
+  expect(r.contentHash).toBe(p.contentHash);
+  expect(
+    (await f.db.query("SELECT limits FROM runtime_conventions")).rows[0].limits,
+  ).toEqual(originalLimits);
+  expect(
+    (
+      await f.db.query(
+        "SELECT * FROM mfl_governance_votes ORDER BY proposal_id,team_id",
+      )
+    ).rows,
+  ).toEqual(originalBallots);
+  expect((await control.resumeVotingRecovery(actor, request)).replayed).toBe(
+    true,
+  );
+  expect(await runtime.tick(leagueId)).toEqual([
+    { wave: "voting-recovery", status: "dispatched", wakes: 10 },
+  ]);
+  expect(await runtime.tick(leagueId)).toEqual([]);
+  const wakes = (
+    await f.db.query(
+      "SELECT agent_id,payload FROM runtime_jobs WHERE causal_id=$1 ORDER BY agent_id",
+      [`convention:${meetingId}:voting-recovery`],
+    )
+  ).rows;
+  expect(wakes).toHaveLength(10);
+  expect(
+    wakes.every(
+      (w) =>
+        w.payload.recovery.commonToAllAiOwners &&
+        w.payload.recovery.reason.includes(
+          "All original ballots remain unchanged",
+        ) &&
+        w.payload.instruction.includes("Votes are immutable per proposal") &&
+        w.payload.instruction.includes("currently allocated turn"),
+    ),
+  ).toBe(true);
+  await f.db.query("UPDATE runtime_agents SET enabled=true WHERE id='agent0'");
+  const recovery = (await store.claim("recovery-worker", 30000, undefined, [
+    "agent0",
+  ]))!;
+  await expect(store.reserve(recovery, 10001)).rejects.toThrow(
+    "CONVENTION_SPEND_LIMIT",
+  );
+  const reservationId = await store.reserve(recovery, 100);
+  const context: any = await runtime.context("agent0", undefined, recovery);
+  expect(context.usage.turns.voting).toBe(3);
+  expect(context.limits.votingTurns).toBe(2);
+  expect(context.currentTurn).toMatchObject({
+    allocated: true,
+    canCommitActionsWithinCurrentTurn: true,
+    recovery: true,
+    jobId: recovery.id,
+  });
+  expect(context.ballotSemantics).toContain("multiple exact candidates");
+  expect(((await runtime.context("agent0")) as any).currentTurn.allocated).toBe(
+    false,
+  );
+  expect(
+    (
+      (await runtime.context("agent0", undefined, {
+        ...recovery,
+        fence: recovery.fence + 1,
+      })) as any
+    ).currentTurn.allocated,
+  ).toBe(false);
+  // The same owner may approve another proposal; the original ballot remains immutable.
+  const second = await gov.execute(owner(0), {
+    type: "castVote",
+    leagueId,
+    idempotencyKey: "second-yes",
+    proposalId: "proposal-1",
+    choice: "yes",
+  });
+  expect(second).toBeTruthy();
+  expect(
+    (
+      await f.db.query(
+        "SELECT * FROM mfl_governance_votes WHERE team_id='team0'",
+      )
+    ).rowCount,
+  ).toBe(2);
+  await expect(
+    gov.execute(owner(0), {
+      type: "castVote",
+      leagueId,
+      idempotencyKey: "change-prior",
+      proposalId: "proposal-0",
+      choice: "no",
+    }),
+  ).rejects.toThrow();
+  await store.complete(recovery, {
+    actions: [],
+    summary: "Synthetic recovery",
+    costMicros: 1,
+    reservationId,
+    driver: "TEST",
+    synthetic: true,
+  });
+  await store.ingestEvent({
+    agentId: "agent0",
+    causalId: "ordinary-after",
+    payload: { kind: "synthetic" },
+  });
+  const ordinary = (await store.claim("after-worker", 30000, undefined, [
+    "agent0",
+  ]))!;
+  await expect(store.reserve(ordinary, 1)).rejects.toThrow(
+    "CONVENTION_TURN_LIMIT",
+  );
+  await f.db.query("UPDATE runtime_jobs SET status='dead' WHERE id=$1", [
+    ordinary.id,
+  ]);
+  await f.db.query(
+    "UPDATE runtime_jobs SET status='running',fence=fence+1,lease_until=clock_timestamp()+interval '1 minute' WHERE id=$1",
+    [recovery.id],
+  );
+  await expect(
+    store.reserve({ ...recovery, fence: recovery.fence + 1 }, 1),
+  ).rejects.toThrow("CONVENTION_RECOVERY_TURN_ALREADY_ALLOCATED");
+});
+it("rejects recovery before voting, with live work, repeated grants, changed ballots, or expanded inputs", async () => {
+  const pre: any = await control.pause(actor, pauseRequest);
+  await expect(
+    control.resumeVotingRecovery(actor, {
+      pauseId: pre.pauseId,
+      idempotencyKey: "early",
+      reason: "test",
+    }),
+  ).rejects.toThrow("VOTING_PAUSE_REQUIRED");
+  await control.resume(actor, {
+    pauseId: pre.pauseId,
+    idempotencyKey: "normal",
+    reason: "test",
+  });
+  await votingFixture();
+  const p: any = await control.pause(actor, {
+    ...pauseRequest,
+    idempotencyKey: "voting-pause",
+  });
+  const input = {
+    pauseId: p.pauseId,
+    idempotencyKey: "recovery",
+    reason: "test",
+  };
+  await expect(control.resumeVotingRecovery(owner(0), input)).rejects.toThrow(
+    "COMMISSIONER_REQUIRED",
+  );
+  await expect(
+    control.resumeVotingRecovery(actor, {
+      ...input,
+      proposalExtensionMs: 1,
+    } as any),
+  ).rejects.toThrow();
+  await f.db.query("UPDATE runtime_agents SET enabled=true WHERE id='agent0'");
+  await expect(control.resumeVotingRecovery(actor, input)).rejects.toThrow(
+    "OWNERS_MUST_BE_DISABLED",
+  );
+  await f.db.query("UPDATE runtime_agents SET enabled=false");
+  await control.resumeVotingRecovery(actor, input);
+  await expect(
+    control.resumeVotingRecovery(actor, { ...input, reason: "changed" }),
+  ).rejects.toThrow("IDEMPOTENCY_CONFLICT");
+  await runtime.tick(leagueId);
+  const again: any = await control.pause(actor, {
+    ...pauseRequest,
+    idempotencyKey: "again-pause",
+  });
+  await expect(
+    control.resumeVotingRecovery(actor, {
+      pauseId: again.pauseId,
+      idempotencyKey: "again-recovery",
+      reason: "test",
+    }),
+  ).rejects.toThrow("ALREADY_GRANTED");
+});
+
+it("recovery preserves the cumulative spend cap and fails closed if the common owner scope changes", async () => {
+  await votingFixture();
+  await f.db.query(
+    `UPDATE runtime_conventions SET limits=jsonb_set(jsonb_set(limits,'{maxSpendMicros}','100'),'{maxReservationMicros}','100')`,
+  );
+  await f.db.query("UPDATE runtime_agents SET enabled=true WHERE id='agent0'");
+  await allocateOrdinaryTurn("spent", 100);
+  await f.db.query("UPDATE runtime_agents SET enabled=false");
+  const p: any = await control.pause(actor, pauseRequest);
+  await control.resumeVotingRecovery(actor, {
+    pauseId: p.pauseId,
+    idempotencyKey: "recovery",
+    reason: "test",
+  });
+  await f.db.query("UPDATE runtime_agents SET kind='human' WHERE id='agent9'");
+  await expect(runtime.tick(leagueId)).rejects.toThrow(
+    "RECOVERY_OWNER_SCOPE_CHANGED",
+  );
+  expect(
+    (
+      await f.db.query("SELECT 1 FROM runtime_jobs WHERE causal_id=$1", [
+        `convention:${meetingId}:voting-recovery`,
+      ])
+    ).rowCount,
+  ).toBe(0);
+  await f.db.query("UPDATE runtime_agents SET kind='ai' WHERE id='agent9'");
+  await runtime.tick(leagueId);
+  await f.db.query("UPDATE runtime_agents SET enabled=true WHERE id='agent0'");
+  const job = (await store.claim("capped", 30000, undefined, ["agent0"]))!;
+  await expect(store.reserve(job, 1)).rejects.toThrow("CONVENTION_SPEND_LIMIT");
+  expect(
+    (
+      await f.db.query(
+        "SELECT count(*)::int n FROM runtime_reservations WHERE job_id=$1",
+        [job.id],
+      )
+    ).rows[0].n,
+  ).toBe(0);
+  expect(
+    (
+      await f.db.query(
+        "SELECT spent_micros FROM runtime_agents WHERE id='agent0'",
+      )
+    ).rows[0].spent_micros,
+  ).toBe("100");
+});

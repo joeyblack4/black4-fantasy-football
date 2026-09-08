@@ -204,11 +204,26 @@ export class ConventionControlService {
     );
   }
   async resume(actor: Actor, input: z.input<typeof resumeSchema>) {
+    return this.resumeInternal(actor, input, false);
+  }
+  /** One common recovery allocation, without increasing the original money limits. */
+  async resumeVotingRecovery(
+    actor: Actor,
+    input: { pauseId: string; idempotencyKey: string; reason: string },
+  ) {
+    const v = resumeSchema.omit({ proposalExtensionMs: true }).parse(input);
+    return this.resumeInternal(actor, v, true);
+  }
+  private async resumeInternal(
+    actor: Actor,
+    input: z.input<typeof resumeSchema>,
+    votingRecovery: boolean,
+  ) {
     const v = resumeSchema.parse(input);
     return this.control(
       actor,
       v.idempotencyKey,
-      { type: "resume", ...v },
+      { type: votingRecovery ? "resumeVotingRecovery" : "resume", ...v },
       async (tx) => {
         await quiet(tx, actor.leagueId);
         const p = (
@@ -250,6 +265,32 @@ export class ConventionControlService {
               content.votes.length === 0),
           "CONVENTION_PROPOSAL_EXTENSION_REQUIRES_PREVOTE_PAUSE",
         );
+        if (votingRecovery) {
+          check(
+            p.paused_at >= before.meeting.proposal_deadline &&
+              p.paused_at < before.meeting.vote_deadline,
+            "CONVENTION_RECOVERY_VOTING_PAUSE_REQUIRED",
+          );
+          check(
+            !before.waves.some((w: any) => w.wave === "voting-recovery"),
+            "CONVENTION_RECOVERY_ALREADY_GRANTED",
+          );
+          check(
+            !before.waves.some(
+              (w: any) => w.phase === "voting" && w.status === "pending",
+            ),
+            "CONVENTION_RECOVERY_PRIOR_WAVES_PENDING",
+          );
+          check(
+            !(
+              await tx.query(
+                "SELECT 1 FROM runtime_convention_control_receipts WHERE league_id=$1 AND response->>'meetingId'=$2 AND response->>'recoveryVotingTurn'='true'",
+                [actor.leagueId, p.meeting_id],
+              )
+            ).rowCount,
+            "CONVENTION_RECOVERY_ALREADY_GRANTED",
+          );
+        }
         const resumedAt = (
           await tx.query(
             "SELECT date_trunc('milliseconds',clock_timestamp()) AS now",
@@ -310,6 +351,40 @@ export class ConventionControlService {
             before.meeting.proposal_deadline,
           ],
         );
+        let recoveryExtensionMs = 0;
+        if (votingRecovery) {
+          const shiftedDeadline = new Date(
+            before.meeting.vote_deadline.getTime() + durationMs,
+          );
+          recoveryExtensionMs = Math.max(
+            0,
+            resumedAt.getTime() + 600000 - shiftedDeadline.getTime(),
+          );
+          for (const table of [
+            "mfl_governance_meetings",
+            "runtime_conventions",
+          ]) {
+            const idColumn =
+              table === "runtime_conventions" ? "meeting_id" : "id";
+            await tx.query(
+              `UPDATE ${table} SET vote_deadline=vote_deadline+$3::bigint*interval '1 millisecond' WHERE league_id=$1 AND ${idColumn}=$2`,
+              [actor.leagueId, p.meeting_id, recoveryExtensionMs],
+            );
+          }
+          await tx.query(
+            "UPDATE runtime_convention_waves SET due_at=due_at+$3::bigint*interval '1 millisecond',expires_at=expires_at+$3::bigint*interval '1 millisecond' WHERE league_id=$1 AND meeting_id=$2 AND status='pending' AND phase='closed'",
+            [actor.leagueId, p.meeting_id, recoveryExtensionMs],
+          );
+          await tx.query(
+            "INSERT INTO runtime_convention_waves(league_id,meeting_id,wave,phase,due_at,expires_at) SELECT league_id,meeting_id,'voting-recovery','voting',$3,vote_deadline FROM runtime_conventions WHERE league_id=$1 AND meeting_id=$2",
+            [actor.leagueId, p.meeting_id, resumedAt],
+          );
+          check(
+            (await frozenContent(tx, actor.leagueId, p.meeting_id)).hash ===
+              content.hash,
+            "CONVENTION_RECOVERY_CONTENT_CHANGED",
+          );
+        }
         const after = await snapshot(tx, actor.leagueId, p.meeting_id);
         await tx.query(
           "UPDATE runtime_convention_pauses SET status='resumed',resumed_at=$2,duration_ms=$3,resumed_by=$4,resume_reason=$5,after_snapshot=$6 WHERE id=$1",
@@ -325,6 +400,18 @@ export class ConventionControlService {
           cumulativePauseMs: total,
           proposalExtensionMs: v.proposalExtensionMs,
           cumulativeProposalExtensionMs,
+          recoveryVotingTurn: votingRecovery,
+          recoveryExtensionMs,
+          recoveryMinimumVotingWindowMs: votingRecovery ? 600000 : null,
+          recoveryOwners: votingRecovery
+            ? (
+                await tx.query(
+                  "SELECT a.id FROM runtime_agents a JOIN runtime_bindings b ON b.agent_id=a.id WHERE b.league_id=$1 AND a.kind='ai' ORDER BY a.id",
+                  [actor.leagueId],
+                )
+              ).rows.map((r) => r.id)
+            : [],
+          limitsUnchanged: true,
           contentHash: content.hash,
           deadlines: {
             discussionOpensAt: after.meeting.discussion_opens_at,

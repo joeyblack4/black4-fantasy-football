@@ -175,7 +175,7 @@ const driver = new OpenRouterDriver(model, {
       teamId: bound.team_id,
     };
     const host = await getFootballHost(db, bound.league_id);
-    const meetingContext = await convention.context(agentId);
+    const meetingContext = await convention.context(agentId, undefined, job);
     const ownerStage = await ownerStageRuntime.context(agentId);
     const football =
       host.kind === "mfl"
