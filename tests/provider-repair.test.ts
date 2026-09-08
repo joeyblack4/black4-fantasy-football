@@ -66,6 +66,65 @@ it("repairs malformed/truncated decisions within the call cap and retains every 
     "No proposed actions were executed",
   );
 });
+it("states the outer envelope first, rejects a bare football action, and accepts only the model-authored corrected batch", async () => {
+  const action = {
+    type: "football",
+    causalId: "synthetic-choice",
+    command: {
+      type: "mfl",
+      action: { type: "draft", round: 3, pick: 2, playerId: "12345" },
+    },
+  };
+  const choice = (content: unknown) => ({
+    finish_reason: "stop",
+    message: { content: JSON.stringify(content) },
+  });
+  const rejected = setup([choice(action)]);
+  await expect(rejected.driver.run(job)).rejects.toMatchObject({
+    message: "PROVIDER_OUTPUT_INVALID",
+    costMicros: 1000,
+  });
+  expect(rejected.requests).toHaveLength(1);
+  const corrected = setup([
+    choice(action),
+    choice({
+      actions: [action],
+      summary:
+        "Synthetic model-authored correction; not an executed native pick.",
+    }),
+  ]);
+  const result = await corrected.driver.run(job);
+  expect(result).toEqual({
+    actions: [action],
+    summary:
+      "Synthetic model-authored correction; not an executed native pick.",
+    costMicros: 2000,
+  });
+  expect(corrected.requests).toHaveLength(2);
+  const initial = corrected.requests[0].messages[0].content;
+  expect(
+    initial.startsWith(
+      "Your final response must be exactly one JSON object with ONLY two outer keys:",
+    ),
+  ).toBe(true);
+  expect(initial).toContain("Put every chosen action INSIDE actions");
+  const repair = JSON.parse(corrected.requests[1].messages.at(-1).content);
+  expect(
+    repair.instruction.startsWith(
+      initial.slice(0, initial.indexOf(" You own franchise")),
+    ),
+  ).toBe(true);
+  expect(repair.issues.map((i: any) => i.path)).toContainEqual(["actions"]);
+  expect(repair.issues.map((i: any) => i.path)).toContainEqual(["summary"]);
+  expect(
+    corrected.requests.every(
+      (r) =>
+        r.max_tokens === 1000 &&
+        r.provider.only[0] === "test" &&
+        r.provider.allow_fallbacks === false,
+    ),
+  ).toBe(true);
+});
 it("reports unavailable invented tools without executing them", async () => {
   let reads = 0;
   const x = setup(
