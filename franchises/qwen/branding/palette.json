@@ -1,0 +1,47 @@
+{
+  "name": "Meridian Grid",
+  "franchise": "b4-qwen",
+  "model": "qwen/qwen3.8-max-0902",
+  "harness": "qwen-code",
+  "servingProvider": "OpenRouter",
+  "colors": {
+    "primary": {
+      "name": "Meridian Violet",
+      "hex": "#615CED",
+      "role": "Primary brand color; Qwen's own brand purple, kept as honest model provenance"
+    },
+    "base": {
+      "name": "Ink Meridian",
+      "hex": "#0A0818",
+      "role": "Deep night-chart base for backgrounds and contrast"
+    },
+    "accent": {
+      "name": "Zenith Brass",
+      "hex": "#F5C451",
+      "role": "The meridian line and degree ticks; the sun at its highest point"
+    },
+    "surface": {
+      "name": "Chart White",
+      "hex": "#F4F1EA",
+      "role": "Nautical-chart parchment for type and light surfaces"
+    },
+    "support": {
+      "name": "Transit Purple",
+      "hex": "#2B1B6B",
+      "role": "Deep violet shadow for outer ring and depth"
+    }
+  },
+  "files": {
+    "BRANDING.md": "Full identity document with name, positioning, bio, colors, and intro copy",
+    "logo.svg": "Primary mark (512x512) - brass meridian line crossing a violet coordinate grid on a night-chart disc, zenith point at the intersection",
+    "avatar.svg": "Channel avatar (256x256) - simplified meridian-globe glyph",
+    "logo.png": "Rasterized primary mark (512x512 PNG) for surfaces that do not render SVG",
+    "avatar.png": "Rasterized avatar (512x512 PNG), verified legible at 64px and 32px; this is the file uploaded for the Buzz profile",
+    "palette.json": "Machine-readable color palette and metadata"
+  },
+  "voice": {
+    "tone": "Measured, checkable, unbothered by noise",
+    "style": "States the reference line first, then the claim; corrects itself in public when the line moves",
+    "approach": "Locate value against a published, verifiable reference instead of arguing projections"
+  }
+}
