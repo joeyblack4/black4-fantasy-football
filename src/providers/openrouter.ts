@@ -16,6 +16,16 @@ import {
   safeValidationIssues,
   safeToolArgumentShape,
 } from "./tool-schema.js";
+import {
+  isDraftRehearsalContext,
+  projectDraftForModel,
+  draftFootballResponseContract,
+} from "./draft-projection.js";
+import {
+  promptCachePolicy,
+  cacheUsageDiagnostic,
+  type PromptCachingMode,
+} from "./prompt-caching.js";
 import { validateStructuredOwnerMemory } from "../runtime/owner-memory-schema.js";
 
 class MemoryCapacityError extends Error {
@@ -99,6 +109,7 @@ type Config = {
   repairInvalidResponses?: boolean;
   webSearch?: boolean;
   requireCanaryToolChoice?: boolean;
+  promptCaching?: PromptCachingMode;
   diagnostic?: (value: Record<string, unknown>) => Promise<void>;
 };
 const money = (n: unknown) =>
@@ -259,6 +270,19 @@ export class OpenRouterDriver implements AgentDriver {
       !["low", "medium", "high"].includes(config.reasoningEffort)
     )
       throw new KnownZeroCostError("REASONING_EFFORT_INVALID");
+    let cachePolicy: ReturnType<typeof promptCachePolicy>;
+    try {
+      cachePolicy = promptCachePolicy(
+        this.model,
+        config.providerSlug,
+        !!config.identity?.canary,
+        config.promptCaching,
+      );
+    } catch (error) {
+      throw new KnownZeroCostError(
+        error instanceof Error ? error.message : "PROMPT_CACHE_POLICY_INVALID",
+      );
+    }
     const manifest = config.identity
       ? await config.identity.registry.preflight(
           config.identity.manifestId,
@@ -303,6 +327,18 @@ export class OpenRouterDriver implements AgentDriver {
         permitted(t.name) &&
         (!config.identity?.canary || t.name === "research_sources"),
     );
+    const draftProjection =
+      !config.identity?.canary && isDraftRehearsalContext(context);
+    const projectedJob =
+      draftProjection && job.payload?.draft
+        ? {
+            ...job,
+            payload: {
+              ...job.payload,
+              draft: projectDraftForModel(job.payload.draft),
+            },
+          }
+        : job;
     const successfulReadTools = new Set<string>();
     const outputSchema =
       job.kind === "staff" ? StaffDecisionSchema : DecisionSchema;
@@ -330,6 +366,14 @@ export class OpenRouterDriver implements AgentDriver {
           permitted(branch.properties.type.const),
         );
     }
+    if (draftProjection && job.kind !== "staff") {
+      const actions = (responseContract as any).properties.actions.items;
+      actions.oneOf = actions.oneOf.map((branch: any) =>
+        branch.properties.type.const === "football"
+          ? draftFootballResponseContract()
+          : branch,
+      );
+    }
     const messages: any[] = [
       {
         role: "system",
@@ -341,7 +385,7 @@ export class OpenRouterDriver implements AgentDriver {
         role: "user",
         content: JSON.stringify({
           now: new Date().toISOString(),
-          job,
+          job: projectedJob,
           ...(!config.identity?.canary
             ? {
                 memoryCapacity: {
@@ -418,6 +462,7 @@ export class OpenRouterDriver implements AgentDriver {
         messages,
         max_tokens: config.maxOutputTokens,
         stream: false,
+        ...(cachePolicy.request ? { cache_control: cachePolicy.request } : {}),
         ...(config.reasoningEffort
           ? { reasoning: { effort: config.reasoningEffort } }
           : {}),
@@ -474,7 +519,8 @@ export class OpenRouterDriver implements AgentDriver {
       const estimate = Math.ceil(
         (searchThisRequest ? 7000 : 0) +
           ((Buffer.byteLength(JSON.stringify(body)) + 4096) *
-            tariff.inputUsdPerMillion +
+            tariff.inputUsdPerMillion *
+            cachePolicy.inputCacheWriteFactor +
             config.maxOutputTokens * tariff.outputUsdPerMillion) *
             1.25 *
             (searchThisRequest ? 2 : 1) +
@@ -507,6 +553,13 @@ export class OpenRouterDriver implements AgentDriver {
           maxOutputTokens: config.maxOutputTokens,
           requestTimeoutMs,
           maxCalls,
+          promptCaching: {
+            policyVersion: cachePolicy.version,
+            mode: cachePolicy.mode,
+            request: cachePolicy.request ?? null,
+            inputCacheWriteFactor: cachePolicy.inputCacheWriteFactor,
+            discountAssumed: false,
+          },
         });
       const record = async (
         value: Parameters<ManifestRegistry["observe"]>[1],
@@ -773,6 +826,19 @@ export class OpenRouterDriver implements AgentDriver {
           ),
           reasoningTokens: tokens(metadata?.native_tokens_reasoning),
         });
+        if (cachePolicy.request || raw.usage?.prompt_tokens_details) {
+          const diagnostic = {
+            kind: "provider_prompt_cache_usage",
+            policyVersion: cachePolicy.version,
+            requestedMode: cachePolicy.mode,
+            ...cacheUsageDiagnostic(raw.usage),
+            costMicros: cost,
+            costSource: "reported-actual-usage-or-verified-generation-metadata",
+          };
+          if (callId && config.identity)
+            await config.identity.registry.diagnostic(callId, diagnostic);
+          await config.diagnostic?.(diagnostic);
+        }
         if (searchThisRequest) {
           const count = tokens(raw.usage?.server_tool_use?.web_search_requests);
           const annotations = (raw.choices?.[0]?.message?.annotations ??
@@ -945,6 +1011,20 @@ export class OpenRouterDriver implements AgentDriver {
                 throw new Error("INVALID_TOOL_ARGUMENTS");
               }
               result = await tool.execute(job, argumentsValue);
+              if (
+                draftProjection &&
+                tool.name === "mfl_read" &&
+                (argumentsValue as any)?.type === "draft" &&
+                result &&
+                typeof result === "object" &&
+                !Array.isArray(result)
+              ) {
+                const original = result as Record<string, unknown>;
+                result = {
+                  ...original,
+                  data: projectDraftForModel(original.data),
+                };
+              }
               successfulReadTools.add(tool.name);
               if (config.identity && callId)
                 await config.identity.registry.diagnostic(callId, {
