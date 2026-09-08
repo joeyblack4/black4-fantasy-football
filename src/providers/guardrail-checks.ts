@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { z } from "zod";
 import type { Principal } from "../auth.js";
 import type { Db } from "../db.js";
@@ -10,6 +10,15 @@ import {
   type Manifest,
 } from "./manifests.js";
 
+import {
+  saveGuardrailArtifact,
+  readGuardrailArtifact,
+  evidenceHash,
+  protectedError,
+  guardrailClock,
+  guardrailTimestampFresh,
+} from "./guardrail-evidence.js";
+
 const origin = "https://openrouter.ai/api/v1";
 const source = "https://openrouter.ai/docs/api/reference/errors-and-debugging";
 export const NegativeProbeSchema = z
@@ -18,11 +27,45 @@ export const NegativeProbeSchema = z
     model: z.string().regex(/^[^\s/]+\/[^\s]+$/),
     providerSlug: z.string().min(1).max(150),
     reservationMicros: z.number().int().positive().safe(),
+    endpointControl: z
+      .object({
+        model: z.string(),
+        providerSlug: z.string(),
+        observedAt: z.iso.datetime(),
+        sourceUrl: z.url(),
+        responseHash: z.string().regex(/^[a-f0-9]{64}$/),
+        supportsMaxTokens: z.literal(true),
+      })
+      .strict()
+      .optional(),
     tariff: z.object({
       inputUsdPerMillion: z.number().finite().nonnegative(),
       outputUsdPerMillion: z.number().finite().nonnegative(),
       verifiedAt: z.iso.datetime(),
     }),
+  })
+  .strict();
+export const NegativeAdjudicationSchema = z
+  .object({
+    captureId: z.uuid(),
+    kind: z.enum(["wrong_model", "wrong_provider"]),
+    responseBytesHash: z.string().regex(/^[a-f0-9]{64}$/),
+    expectedSignature: z
+      .object({
+        httpStatus: z.number().int().min(400).max(499),
+        // An operator must supply an actual documented machine discriminator, not a status code or guessed phrase.
+        discriminatorPath: z
+          .array(z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/))
+          .min(1)
+          .max(4),
+        discriminatorValue: z.string().min(6).max(200),
+        reason: z.enum(["model_allowlist", "provider_allowlist"]),
+        documentationUrl: z
+          .url()
+          .refine((v) => v.startsWith("https://openrouter.ai/docs/")),
+        documentationQuote: z.string().min(20).max(2000),
+      })
+      .strict(),
   })
   .strict();
 export type NegativeProbe = z.infer<typeof NegativeProbeSchema>;
@@ -117,21 +160,39 @@ export class GuardrailChecker {
     if (!response.ok) throw Error("GUARDRAIL_READ_HTTP_" + response.status);
     return (await response.json()) as any;
   }
-  private record(
+  private async record(
     actor: Principal,
     m: Manifest,
     kind: "assignment" | "key_limit" | "wrong_model" | "wrong_provider",
     passed: boolean,
     evidence: Record<string, unknown>,
   ) {
+    const linkage = {
+      manifestId: m.id,
+      keyFingerprint: m.key_fingerprint,
+      keyHash: m.document.upstreamKeyHash,
+      guardrailId: m.document.guardrailId,
+    };
+    const artifactId =
+      kind === "assignment" || kind === "key_limit"
+        ? await saveGuardrailArtifact(
+            this.db,
+            m.id,
+            kind,
+            this.options.synthetic,
+            { ...evidence, ...linkage },
+          )
+        : undefined;
     return this.registry.recordGuardrailCheck(actor, m.id, {
       kind,
       passed,
       synthetic: this.options.synthetic,
       evidence: {
         checker: "black4-guardrails-v1",
-        observedAt: new Date().toISOString(),
+        observedAt: await guardrailClock(this.db),
         ...evidence,
+        ...linkage,
+        ...(artifactId ? { artifactId } : {}),
       },
     });
   }
@@ -204,10 +265,10 @@ export class GuardrailChecker {
       const exact =
         guard.data?.id === d.guardrailId &&
         JSON.stringify(guard.data?.allowed_models) ===
-          JSON.stringify([d.model]) &&
+          JSON.stringify([d.canonicalModel ?? d.model]) &&
         JSON.stringify(guard.data?.allowed_providers) ===
           JSON.stringify([d.providerSlug]) &&
-        !guard.data?.ignored_models?.includes(d.model) &&
+        !guard.data?.ignored_models?.includes(d.canonicalModel ?? d.model) &&
         !guard.data?.ignored_providers?.includes(d.providerSlug);
       const passed = bindingVerified && assigned && complete && exact;
       const evidence = {
@@ -289,18 +350,256 @@ export class GuardrailChecker {
     }
     return reports;
   }
+  /** No HTTP transport, key access or billing mutation. Reviews a captured request exactly once. */
+  async adjudicate(actor: Principal, id: string, input: unknown) {
+    const review = NegativeAdjudicationSchema.parse(input),
+      m = await this.registry.get(id);
+    if (actor.role !== "commissioner" || actor.leagueId !== m.document.leagueId)
+      throw Error("GUARDRAIL_OPERATOR_FORBIDDEN");
+    if (m.status !== "staged") throw Error("GUARDRAIL_STAGED_KEY_REQUIRED");
+    const client = await this.db.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT id FROM provider_manifests WHERE id=$1 FOR UPDATE",
+        [id],
+      );
+      const current = (
+        await client.query(
+          "SELECT status FROM provider_manifests WHERE id=$1",
+          [id],
+        )
+      ).rows[0];
+      if (current.status !== "staged")
+        throw Error("GUARDRAIL_STAGED_KEY_REQUIRED");
+      const artifact = await readGuardrailArtifact(
+          client,
+          review.captureId,
+          id,
+          "negative_response",
+        ),
+        b = artifact.body;
+      if (
+        artifact.synthetic !== this.options.synthetic ||
+        b.keyFingerprint !== m.key_fingerprint ||
+        b.keyHash !== m.document.upstreamKeyHash ||
+        b.guardrailId !== m.document.guardrailId ||
+        b.kind !== review.kind
+      )
+        throw Error("GUARDRAIL_EVIDENCE_BINDING_MISMATCH");
+      if (
+        !b.responseComplete ||
+        !b.responseBytesHash ||
+        b.responseBytesHash !== review.responseBytesHash ||
+        b.hasGeneration ||
+        b.hasChoices ||
+        !b.error ||
+        b.result === "unexpected_acceptance"
+      )
+        throw Error("GUARDRAIL_REJECTION_CAPTURE_REQUIRED");
+      if (
+        evidenceHash(b.requestBody) !== b.requestHash ||
+        b.requestedModel !== b.requestBody.model ||
+        b.requestedProvider !== b.requestBody.provider?.only?.[0] ||
+        b.requestBody.provider?.allow_fallbacks !== false
+      )
+        throw Error("GUARDRAIL_REQUEST_TAMPERED");
+      if (
+        review.kind === "wrong_model"
+          ? b.requestedModel === m.document.model ||
+            b.requestedModel === m.document.canonicalModel ||
+            b.requestedProvider !== m.document.providerSlug
+          : b.requestedModel !== m.document.model ||
+            b.requestedProvider === m.document.providerSlug
+      )
+        throw Error("GUARDRAIL_PROBE_NOT_SINGLE_VARIABLE");
+      const expected = review.expectedSignature,
+        dimension = review.kind === "wrong_model" ? "model" : "provider";
+      if (
+        expected.reason !== dimension + "_allowlist" ||
+        expected.httpStatus !== b.httpStatus ||
+        [401, 402, 408, 429].includes(expected.httpStatus)
+      )
+        throw Error("GUARDRAIL_REJECTION_KIND_MISMATCH");
+      const conflictingReason = [b.error?.message, b.error?.metadata?.reason]
+        .filter((v) => typeof v === "string")
+        .join(" ");
+      if (
+        /\b(authentication|unauthorized|quota|budget|insufficient credits|rate limit|unavailable|not found|timed out)\b/i.test(
+          conflictingReason,
+        )
+      )
+        throw Error("GUARDRAIL_CONFLICTING_REJECTION_NOT_PROOF");
+      const discriminator = expected.discriminatorPath.reduce(
+        (v: any, k) => v?.[k],
+        b.error,
+      );
+      const specific = expected.discriminatorValue.toLowerCase();
+      if (
+        expected.discriminatorPath.at(-1) === "message" ||
+        discriminator !== expected.discriminatorValue ||
+        !specific.includes(dimension) ||
+        !/allowlist|allow_list|not_allowed|restriction|guardrail/.test(
+          specific,
+        ) ||
+        /auth|quota|budget|unavailable|rate_limit|not_found|timeout/.test(
+          specific,
+        )
+      )
+        throw Error("GUARDRAIL_GENERIC_REJECTION_NOT_PROOF");
+      const quote = expected.documentationQuote.toLowerCase();
+      if (
+        !quote.includes(expected.discriminatorValue.toLowerCase()) ||
+        !quote.includes(dimension) ||
+        !/allowlist|allowed|restrict|guardrail/.test(quote)
+      )
+        throw Error("GUARDRAIL_DOCUMENTED_SIGNATURE_REQUIRED");
+      if (
+        !Array.isArray(b.inspectionArtifactIds) ||
+        b.inspectionArtifactIds.length !== 2
+      )
+        throw Error("GUARDRAIL_INSPECTION_LINK_REQUIRED");
+      for (const kind of ["assignment", "key_limit"]) {
+        const rows = await client.query(
+          "SELECT id FROM provider_guardrail_artifacts WHERE id=ANY($1::uuid[]) AND kind=$2",
+          [b.inspectionArtifactIds, kind],
+        );
+        if (rows.rowCount !== 1)
+          throw Error("GUARDRAIL_INSPECTION_LINK_REQUIRED");
+        const inspection = await readGuardrailArtifact(
+          client,
+          rows.rows[0].id,
+          id,
+          kind,
+        );
+        if (
+          inspection.synthetic !== artifact.synthetic ||
+          !inspection.body.passed ||
+          inspection.body.keyFingerprint !== m.key_fingerprint
+        )
+          throw Error("GUARDRAIL_INSPECTION_LINK_REQUIRED");
+      }
+      const call = (
+        await client.query(
+          "SELECT * FROM provider_calls WHERE id=$1 AND manifest_id=$2 AND job_id=$3",
+          [b.callId, id, b.jobId],
+        )
+      ).rows[0];
+      if (
+        !call ||
+        call.staff_role !== "guardrail-probe" ||
+        call.requested_model !== b.requestedModel ||
+        call.requested_provider !== b.requestedProvider ||
+        call.generation_id ||
+        !call.status.startsWith("guardrail_probe_") ||
+        Number(call.cost_micros ?? 0) > 0 ||
+        Number(b.costMicros ?? 0) > 0
+      )
+        throw Error("GUARDRAIL_PROBE_CALL_LINK_REQUIRED");
+      // A rejection is not a billing receipt. Only already reconciled, settled zero cost can pass.
+      const reservation = (
+        await client.query(
+          "SELECT status,actual_micros,agent_id,job_id FROM runtime_reservations WHERE id=$1",
+          [b.reservationId],
+        )
+      ).rows[0];
+      if (
+        !reservation ||
+        reservation.agent_id !== m.document.agentId ||
+        reservation.job_id !== b.jobId ||
+        reservation.status !== "settled" ||
+        Number(reservation.actual_micros) !== 0 ||
+        reservation.actual_micros === null
+      )
+        throw Error("GUARDRAIL_ZERO_COST_RECONCILIATION_REQUIRED");
+      const old = (
+        await client.query(
+          "SELECT * FROM provider_guardrail_artifacts WHERE manifest_id=$1 AND kind='adjudication' AND body->>'captureId'=$2",
+          [id, review.captureId],
+        )
+      ).rows[0];
+      const reviewHash = evidenceHash(review);
+      if (old) {
+        if (old.body.reviewHash !== reviewHash)
+          throw Error("GUARDRAIL_ADJUDICATION_CONFLICT");
+        await client.query("COMMIT");
+        return { artifactId: old.id, passed: true, replayed: true };
+      }
+      const adjudication = {
+        ...review,
+        reviewHash,
+        operatorId: actor.id,
+        keyFingerprint: m.key_fingerprint,
+        probeId: b.probeId,
+        callId: b.callId,
+        reservationId: b.reservationId,
+        inspectionArtifactIds: b.inspectionArtifactIds,
+        restrictionVerified: true,
+        costKnownZero: true,
+      };
+      const artifactId = await saveGuardrailArtifact(
+        client,
+        id,
+        "adjudication",
+        artifact.synthetic,
+        adjudication,
+      );
+      await client.query(
+        "INSERT INTO provider_guardrail_checks(id,manifest_id,check_kind,passed,evidence,synthetic) VALUES($1,$2,$3,true,$4,$5)",
+        [
+          randomUUID(),
+          id,
+          review.kind,
+          {
+            checker: "black4-guardrail-adjudication-v1",
+            artifactId,
+            probeId: b.probeId,
+            captureId: review.captureId,
+          },
+          artifact.synthetic,
+        ],
+      );
+      await client.query("COMMIT");
+      return { artifactId, passed: true, replayed: false };
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
   async probe(actor: Principal, id: string, apiKey: string, input: unknown) {
     const spec = NegativeProbeSchema.parse(input),
       m = await this.bound(actor, id, apiKey),
       d = m.document;
     if (
       spec.kind === "wrong_model"
-        ? spec.model === d.model || spec.providerSlug !== d.providerSlug
+        ? spec.model === d.model ||
+          spec.model === d.canonicalModel ||
+          spec.providerSlug !== d.providerSlug
         : spec.model !== d.model || spec.providerSlug === d.providerSlug
     )
       throw Error("GUARDRAIL_PROBE_NOT_SINGLE_VARIABLE");
-    const age = Date.now() - Date.parse(spec.tariff.verifiedAt);
-    if (age < 0 || age > 86400000) throw Error("GUARDRAIL_PROBE_TARIFF_STALE");
+    if (!this.options.synthetic || spec.endpointControl) {
+      const c = spec.endpointControl,
+        expectedUrl = origin + "/models/" + spec.model + "/endpoints";
+      if (
+        !c ||
+        c.model !== spec.model ||
+        c.providerSlug !== spec.providerSlug ||
+        c.sourceUrl !== expectedUrl ||
+        !(await guardrailTimestampFresh(this.db, c.observedAt, 3600000))
+      )
+        throw Error("GUARDRAIL_FRESH_ENDPOINT_CONTROL_REQUIRED");
+    }
+    if (
+      !(await guardrailTimestampFresh(
+        this.db,
+        spec.tariff.verifiedAt,
+        86400000,
+      ))
+    )
+      throw Error("GUARDRAIL_PROBE_TARIFF_STALE");
     const body = {
       model: spec.model,
       messages: [{ role: "user", content: "Reply OK." }],
@@ -332,7 +631,7 @@ export class GuardrailChecker {
         return { ...existing.evidence, replayed: true, mayRetry: false };
       const checks = (
         await this.db.query(
-          `SELECT DISTINCT ON(check_kind) check_kind,passed,synthetic,created_at FROM provider_guardrail_checks WHERE manifest_id=$1 AND check_kind IN ('assignment','key_limit') ORDER BY check_kind,created_at DESC`,
+          `SELECT DISTINCT ON(check_kind) id,check_kind,passed,synthetic,created_at,evidence,clock_timestamp() BETWEEN created_at AND created_at + interval '5 minutes' AS evidence_fresh FROM provider_guardrail_checks WHERE manifest_id=$1 AND check_kind IN ('assignment','key_limit') ORDER BY check_kind,created_at DESC`,
           [id],
         )
       ).rows;
@@ -342,7 +641,7 @@ export class GuardrailChecker {
           (c) =>
             !c.passed ||
             c.synthetic !== this.options.synthetic ||
-            Date.now() - new Date(c.created_at).getTime() > 300000,
+            c.evidence_fresh !== true,
         )
       )
         throw Error("GUARDRAIL_FRESH_ASSIGNMENT_AND_BUDGET_REQUIRED");
@@ -376,6 +675,11 @@ export class GuardrailChecker {
         requestedModel: spec.model,
         requestedProvider: spec.providerSlug,
         reservationMicros: spec.reservationMicros,
+        endpointControl: spec.endpointControl ?? null,
+        requestBody: body,
+        requestHash: evidenceHash(body),
+        inspectionCheckIds: checks.map((c) => c.id),
+        inspectionArtifactIds: checks.map((c) => c.evidence.artifactId),
         mayRetry: false,
       };
       // Checkpoint precedes inference. A crash leaves budget held and replay refuses another POST.
@@ -396,7 +700,11 @@ export class GuardrailChecker {
         ],
       );
       let status: number | null = null,
-        raw: any = null;
+        raw: any = null,
+        responseComplete = false,
+        responseBytesHash: string | null = null,
+        responseRequestId: string | null = null;
+      const dispatchedAt = await guardrailClock(this.db);
       try {
         await this.bound(actor, id, apiKey);
         await runtime.heartbeat(job, 300000);
@@ -411,11 +719,63 @@ export class GuardrailChecker {
           signal: AbortSignal.timeout(30000),
         });
         status = response.status;
-        raw = await response.json();
+        const requestId = response.headers.get("x-request-id");
+        if (requestId && /^[A-Za-z0-9:_-]{1,200}$/.test(requestId))
+          responseRequestId = requestId;
+        const reader = response.body?.getReader(),
+          chunks: Uint8Array[] = [];
+        let size = 0;
+        if (reader) {
+          while (true) {
+            const part = await reader.read();
+            if (part.done) {
+              responseComplete = true;
+              break;
+            }
+            size += part.value.length;
+            if (size > 32768) {
+              await reader.cancel();
+              break;
+            }
+            chunks.push(part.value);
+          }
+          if (responseComplete) {
+            const bytes = Buffer.concat(chunks);
+            responseBytesHash = createHash("sha256")
+              .update(bytes)
+              .digest("hex");
+            raw = JSON.parse(bytes.toString("utf8"));
+          }
+        }
       } catch {
         /* Dispatch or parse ambiguity retains the whole reservation. */
       }
       const result = classifyNegativeProbe(status, raw);
+      const responseArtifactId = await saveGuardrailArtifact(
+        this.db,
+        id,
+        "negative_response",
+        this.options.synthetic,
+        {
+          ...base,
+          ...result,
+          manifestId: m.id,
+          keyFingerprint: m.key_fingerprint,
+          keyHash: d.upstreamKeyHash,
+          guardrailId: d.guardrailId,
+          kind: spec.kind,
+          dispatchedAt,
+          observedAt: await guardrailClock(this.db),
+          responseComplete,
+          responseBytesHash,
+          responseRequestId,
+          error: protectedError(raw, [apiKey]),
+          hasGeneration: typeof raw?.id === "string",
+          hasChoices: Array.isArray(raw?.choices) && raw.choices.length > 0,
+          costMicros: null,
+          costReconciled: false,
+        },
+      );
       const generationId =
         typeof raw?.id === "string" && raw.id.length <= 500
           ? raw.id
@@ -476,9 +836,37 @@ export class GuardrailChecker {
           chargeKnownZero: false,
           reservationId,
         });
+      const capture = {
+        ...base,
+        ...result,
+        manifestId: m.id,
+        keyFingerprint: m.key_fingerprint,
+        keyHash: d.upstreamKeyHash,
+        guardrailId: d.guardrailId,
+        responseArtifactId,
+        kind: spec.kind,
+        dispatchedAt,
+        observedAt: await guardrailClock(this.db),
+        responseComplete,
+        responseBytesHash,
+        responseRequestId,
+        error: protectedError(raw, [apiKey]),
+        hasGeneration: !!generationId,
+        hasChoices: Array.isArray(raw?.choices) && raw.choices.length > 0,
+        costMicros: cost ?? null,
+        costReconciled: reconciled,
+      };
+      const captureId = await saveGuardrailArtifact(
+        this.db,
+        id,
+        "negative_response",
+        this.options.synthetic,
+        capture,
+      );
       const evidence = {
         ...base,
         ...result,
+        captureId,
         costMicros: cost ?? null,
         costReconciled: reconciled,
         generationId: generationId ?? null,

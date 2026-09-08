@@ -172,3 +172,24 @@ it("ordinary workers do not claim provider canaries", async () => {
     await new RuntimeStore(f.db).claim("ordinary", 30000, doc.model, ["a"]),
   ).toBeNull();
 });
+
+it("bare operator booleans cannot bypass durable guardrail evidence requirements", async () => {
+  const m = await registry.stage(actor, doc, "synthetic-secret");
+  for (const kind of [
+    "assignment",
+    "key_limit",
+    "wrong_model",
+    "wrong_provider",
+  ] as const) {
+    await registry.recordGuardrailCheck(actor, m.id, {
+      kind,
+      passed: true,
+      synthetic: false,
+      evidence: { operatorSaysSo: true },
+    });
+  }
+  await expect(registry.activate(actor, m.id)).rejects.toThrow(
+    "EVIDENCE_REQUIRED",
+  );
+  expect((await registry.get(m.id)).status).toBe("staged");
+});

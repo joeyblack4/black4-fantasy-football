@@ -3,6 +3,11 @@ import { z } from "zod";
 import { transaction, type Db } from "../db.js";
 import type { Principal } from "../auth.js";
 import type { Job } from "../runtime/index.js";
+import {
+  readGuardrailArtifact,
+  evidenceHash,
+  GUARDRAIL_MAX_AGE_MS,
+} from "./guardrail-evidence.js";
 import { KnownZeroCostError } from "../runtime/worker.js";
 
 export const ManifestSchema = z
@@ -25,6 +30,11 @@ export const ManifestSchema = z
       .string()
       .regex(/^[^\s/]+\/[^\s]+$/)
       .refine((v) => !v.includes(":free") && !v.includes("auto")),
+    canonicalModel: z
+      .string()
+      .regex(/^[^\s/]+\/[^\s]+$/)
+      .refine((v) => !v.includes(":free") && !v.includes("auto"))
+      .optional(),
     providerSlug: z.string().min(1).max(150),
     reportedProviderNames: z.array(z.string().min(1)).min(1).max(10),
     quantization: z.string().nullable(),
@@ -246,19 +256,90 @@ export class ManifestRegistry {
         throw new Error("MANIFEST_LINEUP_LOCK_BLACKOUT");
       const checks = (
         await tx.query(
-          `SELECT DISTINCT ON(check_kind) check_kind,passed,synthetic FROM provider_guardrail_checks
+          `SELECT DISTINCT ON(check_kind) check_kind,passed,synthetic,evidence,created_at,
+        clock_timestamp() BETWEEN created_at AND created_at + $2::bigint * interval '1 millisecond' AS evidence_fresh FROM provider_guardrail_checks
         WHERE manifest_id=$1 ORDER BY check_kind,created_at DESC`,
-          [id],
+          [id, GUARDRAIL_MAX_AGE_MS],
         )
       ).rows;
       if (checks.length !== 4 || checks.some((c) => !c.passed || c.synthetic))
         throw new Error("MANIFEST_GUARDRAIL_CANARIES_REQUIRED");
+      for (const check of checks) {
+        if (check.evidence_fresh !== true)
+          throw Error("MANIFEST_GUARDRAIL_EVIDENCE_STALE");
+        const negative =
+          check.check_kind === "wrong_model" ||
+          check.check_kind === "wrong_provider";
+        const artifact = await readGuardrailArtifact(
+          tx,
+          check.evidence.artifactId ?? "",
+          id,
+          negative ? "adjudication" : check.check_kind,
+        );
+        if (
+          artifact.synthetic ||
+          artifact.body.keyFingerprint !== m.key_fingerprint
+        )
+          throw Error("MANIFEST_GUARDRAIL_EVIDENCE_INVALID");
+        if (!negative) {
+          const e = artifact.body;
+          if (
+            !e.passed ||
+            !e.bindingVerified ||
+            e.manifestId !== id ||
+            e.keyHash !== m.document.upstreamKeyHash ||
+            e.guardrailId !== m.document.guardrailId ||
+            (check.check_kind === "assignment" &&
+              (!e.assigned || !e.complete || !e.exact))
+          )
+            throw Error("MANIFEST_GUARDRAIL_EVIDENCE_INVALID");
+        } else {
+          const e = artifact.body;
+          if (
+            e.kind !== check.check_kind ||
+            !e.restrictionVerified ||
+            !e.costKnownZero
+          )
+            throw Error("MANIFEST_GUARDRAIL_EVIDENCE_INVALID");
+          const capture = await readGuardrailArtifact(
+              tx,
+              e.captureId,
+              id,
+              "negative_response",
+            ),
+            b = capture.body;
+          if (
+            capture.synthetic ||
+            b.kind !== check.check_kind ||
+            b.keyFingerprint !== m.key_fingerprint ||
+            b.responseBytesHash !== e.responseBytesHash ||
+            b.hasGeneration ||
+            b.hasChoices ||
+            !b.responseComplete ||
+            evidenceHash(b.requestBody) !== b.requestHash
+          )
+            throw Error("MANIFEST_GUARDRAIL_EVIDENCE_INVALID");
+          const linked = await tx.query(
+            `SELECT 1 FROM provider_calls c JOIN runtime_reservations r ON r.id=$3 AND r.job_id=c.job_id AND r.agent_id=c.agent_id WHERE c.id=$1 AND c.manifest_id=$2 AND c.staff_role='guardrail-probe' AND c.generation_id IS NULL AND c.requested_model=$4 AND c.requested_provider=$5 AND r.status='settled' AND r.actual_micros=0`,
+            [
+              e.callId,
+              id,
+              e.reservationId,
+              b.requestedModel,
+              b.requestedProvider,
+            ],
+          );
+          if (!linked.rowCount)
+            throw Error("MANIFEST_GUARDRAIL_PROBE_LINK_REQUIRED");
+        }
+      }
       if (
         !(
           await tx.query(
             `SELECT 1 FROM provider_calls WHERE manifest_id=$1 AND purpose='canary' AND status='verified'
-        AND reconciliation_status='verified' AND cost_micros IS NOT NULL`,
-            [id],
+        AND reconciliation_status='verified' AND cost_micros IS NOT NULL AND generation_id IS NOT NULL
+        AND reported_model=$2 AND reported_provider=ANY($3::text[]) AND completed_at>clock_timestamp()-interval '1 hour'`,
+            [id, m.document.model, m.document.reportedProviderNames],
           )
         ).rowCount
       )

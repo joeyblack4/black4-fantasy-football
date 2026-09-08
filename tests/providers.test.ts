@@ -141,7 +141,9 @@ it("rejects a different serving provider while retaining the observed charge", a
 it("runs a bounded read tool then counts every model call in the turn", async () => {
   let n = 0,
     reads = 0;
+  const dispatched: any[] = [];
   const x = driver(response, {
+    maxCalls: 2,
     readTools: [
       {
         name: "source_read",
@@ -153,8 +155,13 @@ it("runs a bounded read tool then counts every model call in the turn", async ()
         },
       },
     ],
-    fetchImpl: async () =>
-      new Response(
+    fetchImpl: async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(init.body as string);
+      dispatched.push(body);
+      // Model endpoints may support tools without supporting tool_choice.
+      if (Object.hasOwn(body, "tool_choice"))
+        return new Response("unsupported parameter", { status: 400 });
+      return new Response(
         JSON.stringify(
           n++ === 0
             ? {
@@ -176,11 +183,15 @@ it("runs a bounded read tool then counts every model call in the turn", async ()
               }
             : response,
         ),
-      ),
+      );
+    },
   });
   expect((await x.driver.run(job)).costMicros).toBe(246);
   expect(reads).toBe(1);
   expect(n).toBe(2);
+  expect(dispatched[0].tools).toHaveLength(1);
+  expect(dispatched[1]).not.toHaveProperty("tools");
+  expect(dispatched[1].messages.at(-1).role).toBe("tool");
 });
 it("never executes a read tool returned by a mismatched provider", async () => {
   let reads = 0;
@@ -336,6 +347,72 @@ it("does not replace a known response charge with metadata from another generati
   });
   await expect(x.driver.run(job)).rejects.toMatchObject({
     message: "PROVIDER_GENERATION_ID_MISMATCH",
+    costMicros: 123,
+  });
+});
+
+it("keeps connectivity canaries separate from owner instructions and rejects actions", async () => {
+  const registry = {
+    preflight: async () => ({
+      document: {
+        providerSlug: "synthetic-provider",
+        model: "provider/model",
+        reportedProviderNames: ["Synthetic Provider"],
+        quantization: null,
+        toolPermissions: ["message"],
+      },
+    }),
+    begin: async () => "fixture-call",
+    observe: async () => {},
+  };
+  const requests: any[] = [];
+  let actions: any[] = [];
+  const x = driver(response, {
+    identity: { manifestId: "fixture-manifest", registry, canary: true },
+    fetchImpl: async (url: string, init: RequestInit) => {
+      if (url.includes("/generation?"))
+        return new Response(
+          JSON.stringify({
+            data: {
+              id: response.id,
+              model: response.model,
+              provider_name: "Synthetic Provider",
+              total_cost: 0.000123,
+            },
+          }),
+        );
+      requests.push(JSON.parse(init.body as string));
+      return new Response(
+        JSON.stringify({
+          ...response,
+          choices: [
+            {
+              finish_reason: "stop",
+              message: {
+                content: JSON.stringify({
+                  actions,
+                  summary: "Controlled synthetic connectivity result",
+                }),
+              },
+            },
+          ],
+        }),
+      );
+    },
+  });
+  expect((await x.driver.run(job)).actions).toEqual([]);
+  expect(requests[0].messages[0].content).toContain("Do not name a team");
+  expect(requests[0].messages[0].content).not.toContain("Choose your name");
+  actions = [
+    {
+      type: "message",
+      causalId: "blocked",
+      recipientId: "b",
+      body: "Should never execute",
+    },
+  ];
+  await expect(x.driver.run(job)).rejects.toMatchObject({
+    message: "PROVIDER_CANARY_ACTION_FORBIDDEN",
     costMicros: 123,
   });
 });
