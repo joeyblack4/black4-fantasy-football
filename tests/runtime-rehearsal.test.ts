@@ -15,6 +15,7 @@ import { transaction } from "../src/db.js";
 import { randomUUID } from "node:crypto";
 import { fingerprint } from "../src/governance/validation.js";
 import { FranchiseService } from "../src/franchise/service.js";
+import { GovernanceService } from "../src/governance/index.js";
 import type { Db } from "../src/db.js";
 let f: Awaited<ReturnType<typeof testDb>>,
   store: RuntimeStore,
@@ -732,7 +733,43 @@ it("requires the full current owner set and a matching live onboarding closure b
       idempotencyKey: "cannot-re-attest-changed-review",
     }),
   ).rejects.toMatchObject({ code: "REHEARSAL_REVIEW_ATTESTATION_CONFLICT" });
-  expect((await service.arm(actor, liveConfig)).status).toBe("armed");
+  const preparedDecision = await prepareRulesFixture();
+  expect(
+    (await service.arm(actor, { ...liveConfig, preparedDecision })).status,
+  ).toBe("armed");
+  const allContexts = await Promise.all(
+    Array.from({ length: 10 }, (_, i) => service.context("agent" + i)),
+  );
+  expect(
+    allContexts.every(
+      (c) =>
+        JSON.stringify(c!.preparedRules) ===
+        JSON.stringify(allContexts[0]!.preparedRules),
+    ),
+  ).toBe(true);
+  expect(allContexts[0]!.preparedRules).toMatchObject({
+    status: "provisional-trial-fixture",
+    productionRatificationPerformed: false,
+    proposal: {
+      id: preparedDecision.proposalId,
+      selections: {
+        scoring: "ppr",
+        roster: "16",
+        lineup: "nine",
+        draft: "snake",
+      },
+      leaguePolicies:
+        "SYNTHETIC commissioner pace target; no fabricated human choices.",
+    },
+  });
+  expect(
+    allContexts[0]!.preparedRules!.selectedOptions.map((o) => o.content),
+  ).toEqual([
+    "SYNTHETIC PPR: receptions 1; passing TD 4; rushing TD 6.",
+    "SYNTHETIC 16 roster spots and 16 rounds.",
+    "SYNTHETIC 9 starters: QB1 RB2 WR2 TE1 FLEX1 PK1 DEF1.",
+    "SYNTHETIC snake, exact owner-approved teamOrder.",
+  ]);
   expect(
     (
       await f.db.query(
@@ -1087,4 +1124,222 @@ it("accepts an explicit twenty dollar cap without changing the default or canoni
         r.spent_micros === "0",
     ),
   ).toBe(true);
+});
+
+async function prepareRulesFixture() {
+  for (let i = 2; i < 12; i++) {
+    if (
+      (
+        await f.db.query(
+          "SELECT 1 FROM league_teams WHERE league_id=$1 AND id=$2",
+          [leagueId, "team" + i],
+        )
+      ).rowCount
+    )
+      continue;
+    const kind = i < 10 ? "ai" : "human";
+    await f.db.query(
+      "INSERT INTO league_teams(league_id,id,name,owner_id,kind,draft_position,waiver_priority,faab) VALUES($1,$2,$2,$3,$4,$5,$5,100)",
+      [leagueId, "team" + i, "owner" + i, kind, i],
+    );
+    await store.createAgent({
+      id: "agent" + i,
+      kind,
+      model: "synthetic/rehearsal",
+      budgetMicros: 1000,
+    });
+    await f.db.query(
+      "INSERT INTO runtime_bindings(agent_id,league_id,team_id) VALUES($1,$2,$3)",
+      ["agent" + i, leagueId, "team" + i],
+    );
+  }
+  await f.db.query("UPDATE runtime_agents SET enabled=false");
+  const gov = new GovernanceService(f.db);
+  const questions = [
+    {
+      id: "scoring",
+      label: "Scoring",
+      options: [
+        {
+          id: "ppr",
+          label: "PPR",
+          content: "SYNTHETIC PPR: receptions 1; passing TD 4; rushing TD 6.",
+          evidenceRefs: ["synthetic://fixture/scoring"],
+        },
+      ],
+    },
+    {
+      id: "roster",
+      label: "Roster",
+      options: [
+        {
+          id: "16",
+          label: "Sixteen",
+          content: "SYNTHETIC 16 roster spots and 16 rounds.",
+          evidenceRefs: ["synthetic://fixture/roster"],
+        },
+      ],
+    },
+    {
+      id: "lineup",
+      label: "Starters",
+      options: [
+        {
+          id: "nine",
+          label: "Nine",
+          content: "SYNTHETIC 9 starters: QB1 RB2 WR2 TE1 FLEX1 PK1 DEF1.",
+          evidenceRefs: ["synthetic://fixture/lineup"],
+        },
+      ],
+    },
+    {
+      id: "draft",
+      label: "Order",
+      options: [
+        {
+          id: "snake",
+          label: "Snake",
+          content: "SYNTHETIC snake, exact owner-approved teamOrder.",
+          evidenceRefs: ["synthetic://fixture/draft"],
+        },
+      ],
+    },
+  ];
+  await gov.execute(actor, {
+    type: "registerMflMenu",
+    leagueId,
+    idempotencyKey: "prepared-menu",
+    menuId: "prepared-menu",
+    title: "SYNTHETIC rule menu",
+    sourceNote: "SYNTHETIC test only",
+    questions,
+    applicationSections: [{ id: "native", label: "SYNTHETIC application" }],
+  });
+  await gov.execute(actor, {
+    type: "openMeeting",
+    leagueId,
+    idempotencyKey: "prepared-meeting",
+    meetingId: "prepared-meeting",
+    menuId: "prepared-menu",
+    proposalDeadline: new Date(Date.now() + 60000).toISOString(),
+    voteDeadline: new Date(Date.now() + 120000).toISOString(),
+  });
+  await gov.execute(
+    { id: "owner0", role: "owner", leagueId, teamId: "team0" },
+    {
+      type: "submitMflProposal",
+      leagueId,
+      idempotencyKey: "prepared-proposal",
+      meetingId: "prepared-meeting",
+      proposalId: "prepared-proposal",
+      version: "v1",
+      title: "SYNTHETIC agreed rules",
+      rationale: "SYNTHETIC fixture, not a real model choice",
+      menuId: "prepared-menu",
+      selections: {
+        scoring: "ppr",
+        roster: "16",
+        lineup: "nine",
+        draft: "snake",
+      },
+      teamOrder: Array.from({ length: 12 }, (_, i) => "team" + i),
+      leaguePolicies:
+        "SYNTHETIC commissioner pace target; no fabricated human choices.",
+    },
+  );
+  await f.db.query(
+    "UPDATE mfl_governance_meetings SET discussion_opens_at=clock_timestamp()-interval '2 seconds',proposal_deadline=clock_timestamp()-interval '1 second' WHERE id='prepared-meeting'",
+  );
+  for (let i = 0; i < 8; i++)
+    await gov.execute(
+      { id: "owner" + i, role: "owner", leagueId, teamId: "team" + i },
+      {
+        type: "castVote",
+        leagueId,
+        idempotencyKey: "prepared-vote-" + i,
+        proposalId: "prepared-proposal",
+        choice: "yes",
+      },
+    );
+  await f.db.query(
+    "UPDATE mfl_governance_meetings SET vote_deadline=clock_timestamp()-interval '1 millisecond' WHERE id='prepared-meeting'",
+  );
+  const d: any = await gov.execute(actor, {
+    type: "prepareRatification",
+    leagueId,
+    idempotencyKey: "prepared-decision",
+    proposalId: "prepared-proposal",
+  });
+  const m = (
+    await f.db.query(
+      "SELECT content_hash FROM mfl_governance_menus WHERE id='prepared-menu'",
+    )
+  ).rows[0];
+  return {
+    decisionId: d.result.decisionId,
+    proposalId: d.result.proposalId,
+    proposalHash: d.result.proposalHash,
+    menuHash: m.content_hash,
+  };
+}
+it("binds only the exact selected prepared rules transactionally and rejects wrong hashes or current host", async () => {
+  const preparedDecision = await prepareRulesFixture();
+  await expect(
+    service.arm(actor, {
+      ...config,
+      preparedDecision: { ...preparedDecision, proposalHash: "a".repeat(64) },
+    }),
+  ).rejects.toThrow("PREPARED_PROPOSAL_MISMATCH");
+  expect((await f.db.query("SELECT 1 FROM runtime_rehearsals")).rowCount).toBe(
+    0,
+  );
+  expect(
+    (
+      await f.db.query(
+        "SELECT 1 FROM runtime_receipts WHERE type='rehearsal.trial_rules_bound'",
+      )
+    ).rowCount,
+  ).toBe(0);
+  await expect(
+    service.arm(actor, {
+      ...config,
+      preparedDecision: { ...preparedDecision, menuHash: "a".repeat(64) },
+    }),
+  ).rejects.toThrow("PREPARED_MENU_MISMATCH");
+  await service.arm(actor, { ...config, preparedDecision });
+  const c = await service.context("agent0");
+  expect(c!.preparedRules!.proposal.teamOrder).toEqual(
+    Array.from({ length: 12 }, (_, i) => "team" + i),
+  );
+  const original = (
+    await f.db.query(
+      "SELECT * FROM mfl_governance_proposals WHERE id='prepared-proposal'",
+    )
+  ).rows[0];
+  await f.db.query(
+    "UPDATE mfl_governance_proposals SET content=jsonb_set(content,'{leaguePolicies}',$1::jsonb) WHERE id='prepared-proposal'",
+    [JSON.stringify("changed")],
+  );
+  await expect(service.context("agent0")).rejects.toThrow(
+    "PREPARED_PROPOSAL_MISMATCH",
+  );
+  await f.db.query(
+    "UPDATE mfl_governance_proposals SET content=$1 WHERE id='prepared-proposal'",
+    [original.content],
+  );
+  await f.db.query(
+    "UPDATE league_host_bindings SET version=version+1 WHERE league_id=$1",
+    [leagueId],
+  );
+  await expect(service.context("agent0")).rejects.toThrow(
+    "PREPARED_CURRENT_HOST_MISMATCH",
+  );
+});
+it("keeps legacy synthetic context explicit and fails closed when real mode has no prepared binding", async () => {
+  await service.arm(actor, config);
+  expect((await service.context("agent0"))!.preparedRules).toBeNull();
+  await f.db.query("UPDATE runtime_rehearsals SET synthetic=false");
+  await expect(service.context("agent0")).rejects.toThrow(
+    "PREPARED_RULES_BINDING_REQUIRED",
+  );
 });
