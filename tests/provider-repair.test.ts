@@ -685,3 +685,186 @@ it("enforces the existing key cap while allowing replacement and never adding an
   ).toEqual([replacement]);
   expect(scoped.memory[0].content).toBe("kept");
 });
+
+const batch = (count: number, prefix = "batch") => ({
+  finish_reason: "tool_calls",
+  message: {
+    content: null,
+    reasoning: "SYNTHETIC exact reasoning continuity",
+    reasoning_details: [
+      {
+        type: "reasoning.encrypted",
+        data: "SYNTHETIC opaque block",
+        id: "signed-fixture",
+        index: 0,
+      },
+    ],
+    tool_calls: Array.from({ length: count }, (_, i) => ({
+      id: prefix + "-" + i,
+      type: "function",
+      function: { name: "read", arguments: JSON.stringify({ index: i }) },
+    })),
+  },
+});
+it("corrects one five-call batch without executing it, preserving tool IDs, reasoning, charges and the original call ceiling", async () => {
+  let reads = 0;
+  const diagnostics: any[] = [];
+  const rejected = batch(5);
+  const x = setup([rejected, batch(4, "valid"), final], {
+    maxCalls: 6,
+    diagnostic: async (d: any) => {
+      diagnostics.push({ ...d, readsAtDiagnostic: reads });
+    },
+    readTools: [
+      {
+        name: "read",
+        description: "SYNTHETIC read",
+        parameters: {
+          type: "object",
+          properties: { index: { type: "integer" } },
+        },
+        execute: async () => {
+          reads++;
+          return { status: "verified", synthetic: true };
+        },
+      },
+    ],
+  });
+  const result = await x.driver.run(job);
+  expect(result).toMatchObject({ actions: [], costMicros: 3000 });
+  expect(reads).toBe(4);
+  expect(x.requests).toHaveLength(3);
+  expect(x.requests[0].messages[0].content).toContain(
+    "at most 4 read-tool calls",
+  );
+  expect(diagnostics).toContainEqual(
+    expect.objectContaining({
+      kind: "owner_read_tool_batch_rejected",
+      requestedCount: 5,
+      maxReadToolsPerResponse: 4,
+      executed: false,
+      readsAtDiagnostic: 0,
+    }),
+  );
+  const assistant = x.requests[1].messages.find(
+    (m: any) => m.role === "assistant",
+  );
+  expect(assistant).toEqual({ role: "assistant", ...rejected.message });
+  const errors = x.requests[1].messages.filter((m: any) => m.role === "tool");
+  expect(errors.map((m: any) => m.tool_call_id)).toEqual(
+    rejected.message.tool_calls.map((c) => c.id),
+  );
+  expect(
+    errors.every(
+      (m: any) =>
+        JSON.parse(m.content).code === "PROVIDER_TOOL_LIMIT" &&
+        JSON.parse(m.content).executed === false,
+    ),
+  ).toBe(true);
+  expect(x.requests[1].tools).toBeDefined();
+});
+it.each(["count", "argument", "aggregate", "duplicate", "malformed"])(
+  "rejects a gross %s tool batch without any execution or correction call",
+  async (kind) => {
+    let reads = 0;
+    const choice = batch(kind === "count" ? 17 : 5);
+    if (kind === "argument")
+      choice.message.tool_calls[0].function.arguments = JSON.stringify({
+        x: "x".repeat(32768),
+      });
+    if (kind === "aggregate")
+      choice.message.tool_calls.forEach((c) => {
+        c.function.arguments = JSON.stringify({ x: "x".repeat(27000) });
+      });
+    if (kind === "duplicate")
+      choice.message.tool_calls[1].id = choice.message.tool_calls[0].id;
+    if (kind === "malformed")
+      choice.message.tool_calls[0].function.arguments = "[1]";
+    const x = setup([choice, final], {
+      maxCalls: 6,
+      readTools: [
+        {
+          name: "read",
+          description: "SYNTHETIC",
+          parameters: { type: "object" },
+          execute: async () => {
+            reads++;
+          },
+        },
+      ],
+    });
+    await expect(x.driver.run(job)).rejects.toMatchObject({
+      message:
+        kind === "count"
+          ? "PROVIDER_TOOL_LIMIT"
+          : "PROVIDER_TOOL_BATCH_INVALID",
+      costMicros: 1000,
+    });
+    expect(reads).toBe(0);
+    expect(x.requests).toHaveLength(1);
+  },
+);
+it("allows only one overlong correction and retains both charges if the model repeats it", async () => {
+  let reads = 0;
+  const x = setup([batch(5), batch(5, "again"), final], {
+    maxCalls: 6,
+    readTools: [
+      {
+        name: "read",
+        description: "SYNTHETIC",
+        parameters: { type: "object" },
+        execute: async () => {
+          reads++;
+        },
+      },
+    ],
+  });
+  await expect(x.driver.run(job)).rejects.toMatchObject({
+    message: "PROVIDER_TOOL_LIMIT",
+    costMicros: 2000,
+  });
+  expect(x.requests).toHaveLength(2);
+  expect(reads).toBe(0);
+});
+it("charges correction against the same six calls and keeps the fifth-call decision boundary", async () => {
+  let reads = 0;
+  const invalid = {
+    finish_reason: "stop",
+    message: { content: "SYNTHETIC malformed final" },
+  };
+  const x = setup(
+    [
+      batch(5),
+      batch(1, "r2"),
+      batch(1, "r3"),
+      batch(1, "r4"),
+      invalid,
+      invalid,
+    ],
+    {
+      maxCalls: 6,
+      readTools: [
+        {
+          name: "read",
+          description: "SYNTHETIC",
+          parameters: { type: "object" },
+          execute: async () => {
+            reads++;
+            return {};
+          },
+        },
+      ],
+    },
+  );
+  await expect(x.driver.run(job)).rejects.toMatchObject({
+    message: "PROVIDER_OUTPUT_INVALID",
+    costMicros: 6000,
+  });
+  expect(x.requests).toHaveLength(6);
+  expect(reads).toBe(3);
+  expect(x.requests[4].tools).toBeUndefined();
+  expect(x.requests[5].tools).toBeUndefined();
+  expect(x.requests[4].messages[0].content).toContain(
+    "read-tool phase is now closed",
+  );
+});

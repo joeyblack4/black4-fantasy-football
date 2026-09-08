@@ -126,7 +126,11 @@ it("returns only the current owner identity/wallet and safe worker settings, wit
       },
     });
     expect(r.runtime).toMatchObject({
-      configured: { reasoningEffort: "low", maxOutputTokens: 6000 },
+      configured: {
+        reasoningEffort: "low",
+        maxOutputTokens: 6000,
+        maxReadToolsPerResponse: 4,
+      },
       reasoningPolicy: { matchesRunningConfiguration: true },
       patch: { patch: "synthetic-r1" },
     });

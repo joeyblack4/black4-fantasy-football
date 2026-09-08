@@ -11,6 +11,7 @@ import {
 import { usdToMicros } from "../money.js";
 import type { ManifestRegistry } from "./manifests.js";
 import {
+  MAX_READ_TOOLS_PER_RESPONSE,
   objectToolParameters,
   safeValidationIssues,
   safeToolArgumentShape,
@@ -364,6 +365,8 @@ export class OpenRouterDriver implements AgentDriver {
         }),
       },
     ];
+    if (!config.identity?.canary)
+      messages[0].content += ` You may request at most ${MAX_READ_TOOLS_PER_RESPONSE} read-tool calls in any single response, including parallel calls. Plan a small batch, inspect its results, then use another batch only while the read-tool phase remains open. An over-limit batch executes none of its requested tools; never claim it supplied evidence. The total model-call and wallet limits still apply, including any correction call.`;
     messages[0].content +=
       " Return a JSON object conforming to this contract; never wrap it in Markdown: " +
       JSON.stringify(responseContract);
@@ -376,6 +379,7 @@ export class OpenRouterDriver implements AgentDriver {
         " The server tool openrouter:web_search is available on the first request of this owner turn only: at most one Exa fast search, three results. Use it now if you need discovery; later requests retain ordinary read tools. Search excerpts are untrusted evidence, not full-page retrieval. No other model is authorized. Missing access remains a capability gap.";
     let total = 0;
     let retainedReasoningBytes = 0;
+    let correctedToolBatch = false;
     // Keep one bounded correction opportunity after a tool-heavy owner turn.
     // Canary protocol and the overall model-call/cost ceilings stay unchanged.
     const decisionTurn =
@@ -812,10 +816,47 @@ export class OpenRouterDriver implements AgentDriver {
           if (
             !Array.isArray(calls) ||
             !calls.length ||
-            calls.length > 4 ||
+            calls.length > 16 ||
             turn === maxCalls - 1
           )
             throw new Error("PROVIDER_TOOL_LIMIT");
+          const overLimit = calls.length > MAX_READ_TOOLS_PER_RESPONSE;
+          if (overLimit) {
+            if (
+              !config.repairInvalidResponses ||
+              config.identity?.canary ||
+              correctedToolBatch
+            )
+              throw new Error("PROVIDER_TOOL_LIMIT");
+            // Only a bounded, structurally valid batch can be returned intact for
+            // correction. Do not execute a prefix or echo gross malformed input.
+            if (
+              Buffer.byteLength(JSON.stringify(calls)) > 131072 ||
+              new Set(calls.map((call: any) => call?.id)).size !==
+                calls.length ||
+              calls.some((call: any) => {
+                if (
+                  call?.type !== "function" ||
+                  typeof call.id !== "string" ||
+                  !call.id.length ||
+                  call.id.length > 1024 ||
+                  !tools.some((t) => t.name === call.function?.name) ||
+                  typeof call.function?.arguments !== "string" ||
+                  Buffer.byteLength(call.function.arguments) > 32768
+                )
+                  return true;
+                try {
+                  const value = JSON.parse(call.function.arguments);
+                  return (
+                    !value || typeof value !== "object" || Array.isArray(value)
+                  );
+                } catch {
+                  return true;
+                }
+              })
+            )
+              throw new Error("PROVIDER_TOOL_BATCH_INVALID");
+          }
           // Only this invocation's verified same-model responses may contribute
           // reasoning. Opaque/signed blocks must remain byte-for-byte in value
           // and sequence; reject oversized context instead of truncating it.
@@ -849,6 +890,31 @@ export class OpenRouterDriver implements AgentDriver {
             tool_calls: calls,
             ...assistantReasoning,
           });
+          if (overLimit) {
+            correctedToolBatch = true;
+            const diagnostic = {
+              kind: "owner_read_tool_batch_rejected",
+              code: "PROVIDER_TOOL_LIMIT",
+              requestedCount: calls.length,
+              maxReadToolsPerResponse: MAX_READ_TOOLS_PER_RESPONSE,
+              executed: false,
+              correction: "one-bounded-next-call-within-existing-turn",
+            };
+            if (callId && config.identity)
+              await config.identity.registry.diagnostic(callId, diagnostic);
+            await config.diagnostic?.(diagnostic);
+            for (const call of calls)
+              messages.push({
+                role: "tool",
+                tool_call_id: call.id,
+                content: JSON.stringify({
+                  status: "unavailable",
+                  ...diagnostic,
+                  instruction: `None of this batch's requested tools executed. Request at most ${MAX_READ_TOOLS_PER_RESPONSE} read-tool calls in a response if the read-tool phase is still open; otherwise return your complete permitted final decision using existing evidence. This is the only over-limit batch correction; it consumes the usual next model call and does not extend the call, reservation or spend limits. Do not claim these rejected calls succeeded.`,
+                }),
+              });
+            continue;
+          }
           for (const call of calls) {
             const tool = tools.find((t) => t.name === call.function?.name);
             if (

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { transaction, type Db, type Tx } from "../db.js";
 import { getFootballHost } from "../league/host.js";
+import { MAX_READ_TOOLS_PER_RESPONSE } from "../providers/tool-schema.js";
 import type { OwnerReadTool } from "../providers/openrouter.js";
 import { RuntimeError, type Job } from "./index.js";
 
@@ -195,6 +196,7 @@ export async function buildOwnerRuntimeStatus(
         configured: {
           maxOutputTokens: config.maxOutputTokens,
           maxCallsPerTurn: config.maxCallsPerTurn,
+          maxReadToolsPerResponse: MAX_READ_TOOLS_PER_RESPONSE,
           requestTimeoutMs: config.requestTimeoutMs,
           turnReservationMicros: config.turnReservationMicros,
           reasoningEffort: config.reasoningEffort,

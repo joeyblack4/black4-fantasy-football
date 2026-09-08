@@ -1,3 +1,6 @@
+/** Common execution ceiling, distinct from total model calls in an owner turn. */
+export const MAX_READ_TOOLS_PER_RESPONSE = 4;
+
 /** Advertise object-root function parameters; each tool still validates its exact union. */
 export function objectToolParameters(
   schema: Record<string, any>,
