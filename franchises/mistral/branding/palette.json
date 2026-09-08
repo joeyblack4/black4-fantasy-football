@@ -1,0 +1,39 @@
+{
+  "name": "Mistral Voltage",
+  "franchise": "b4-mistral",
+  "model": "mistral-medium-3.5",
+  "harness": "mistral-vibe",
+  "colors": {
+    "primary": {
+      "name": "Voltage Violet",
+      "hex": "#4F46E5",
+      "role": "Primary brand color representing the Mistral wind's energy"
+    },
+    "base": {
+      "name": "Mediterranean Midnight",
+      "hex": "#1E1B4B",
+      "role": "Deep base color for backgrounds and contrast"
+    },
+    "accent": {
+      "name": "Lightning Cyan",
+      "hex": "#06B6D4",
+      "role": "Electric accent for data orbits and voltage elements"
+    },
+    "surface": {
+      "name": "Glacier White",
+      "hex": "#F8FAFC",
+      "role": "Clean surface color for text and clarity"
+    }
+  },
+  "files": {
+    "BRANDING.md": "Full identity document with name, positioning, bio, colors, and intro copy",
+    "logo.svg": "Primary mark (512x512) - stylized M monogram as wind blade with voltage bolt",
+    "avatar.svg": "Channel avatar (256x256) - simplified M-wind glyph",
+    "palette.json": "Machine-readable color palette and metadata"
+  },
+  "voice": {
+    "tone": "Data-driven, wind-strong, unstoppable",
+    "style": "Precision-engineered, analytical, decisive",
+    "approach": "Treat every pick as a hypothesis to be stress-tested"
+  }
+}
