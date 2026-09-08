@@ -55,6 +55,18 @@ The module deliberately does not calculate NFL scoring or claim a playoff champi
 
 `new LeagueClock(db).tick(verifiedSystemActor, {leagueId, maxCommands: 5})` processes a bounded snapshot of due draft picks and waiver periods through the existing command service. It requires an explicit league-scoped commissioner/system identity; owner credentials cannot use it. It accepts no caller clock. PostgreSQL's full timestamp precision is preserved while selecting due work.
 
-Stable command keys are `clock:draft:<pickIndex>` and `clock:waivers:<periodId>`. Repeated or concurrent ticks cannot duplicate picks or FAAB debits. Missing owner queues produce a visible `blocked / QUEUE_EXHAUSTED` work result with `needsAttention: true`, leaving the pick pending. Supplying an owner-authored queue lets a later tick recover. No default player rankings are invented.
+Stable command keys are `clock:draft:<pickIndex>:<draftEpoch>` and `clock:waivers:<periodId>`. Repeated or concurrent ticks cannot duplicate picks or FAAB debits. Missing owner queues produce a visible `paused` receipt and `needsAttention: true`, leaving the pick pending. An owner supplies a queue and the commissioner explicitly resumes with a reason before the clock can continue. No default player rankings are invented.
 
 The helper returns work receipts, replay/skip states and bounded domain failures. A separately supervised process must invoke it; importing this module does not start a timer. `tests/league-clock.test.ts` verifies future and exact database deadlines, retries, concurrent workers, empty-queue recovery, scope, and work limits using synthetic records.
+
+## Additional readiness mechanics
+
+The supported capability menu is versioned and returned by league snapshots. New proposals commit to that menu, exact league rules, scoring formula and draft permutation; old rows are labeled `legacy-unverified` instead of receiving retroactive approvals. The menu explicitly identifies unsupported IR, auction and playoff-bracket behavior.
+
+Commissioner `pauseDraft` and `resumeDraft` commands require a reason and leave public receipts. Queue exhaustion now atomically pauses the draft with a `draftPaused` event. Paused clocks do not keep retrying or fabricate a pick. Resume increments `draft_epoch`; clock keys include that epoch so an old automatic-pause receipt cannot prevent the resumed pick from completing. A voluntarily paused turn preserves remaining time; an expired turn receives its configured pick interval when resumed.
+
+Ratified `tradeDeadlineAt` controls new offers and acceptance; existing offers can still be cancelled or rejected. Ratified `droppedPlayerHoldHours` (default 24, configurable 0–168) creates public time-bound holds when a waiver or first-come acquisition drops a player. Immediate first-come reacquisition is denied, and a waiver cannot resolve for that player before the hold expires.
+
+`LeagueEventDispatcher.dispatchOnce(scopedSystemActor,{leagueId,limit})` consumes committed game events into same-league owner inboxes. Private trade events go only to participants; private queues/claims are excluded from broadcast. Per-recipient delivery receipts and runtime wakeups commit together using `RuntimeStore.ingestEventTx`. Tests inject delivery-write failure to verify no orphan wakeup survives a rolled-back transaction.
+
+`regularSeasonWeeks` and `scheduleAlgorithm: circle-repeat-v1` are owner-voted rules. `ScoreboardService.schedule` exposes every planned week with configured/missing status. Week configuration must match the deterministic schedule derived from the approved franchise order; the first eleven weeks contain each opponent pair once, then rematches reverse home/away. Postseason brackets are still explicitly unavailable.

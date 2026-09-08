@@ -13,9 +13,15 @@ const timestamp = z.iso.datetime({ offset: true });
 export const leagueRulesSchema = z
   .object({
     rosterSize: z.number().int().min(1).max(16),
+    regularSeasonWeeks: z.number().int().min(1).max(17).default(14),
+    scheduleAlgorithm: z
+      .literal("circle-repeat-v1")
+      .default("circle-repeat-v1"),
     draftOrder: z.enum(["snake", "linear"]),
     draftPickSeconds: z.number().int().min(1).max(600),
     faabBudget: z.number().int().min(0).max(100000),
+    tradeDeadlineAt: timestamp.nullable().default(null),
+    droppedPlayerHoldHours: z.number().int().min(0).max(168).default(24),
     freeAgentMode: z
       .enum(["waiversOnly", "scheduledFirstCome"])
       .default("waiversOnly"),
@@ -118,6 +124,11 @@ export const leagueCommandSchema = z.discriminatedUnion("type", [
     .object({
       ...common,
       type: z.literal("ratifyConstitution"),
+      proposalId: id.optional(),
+      proposalHash: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .optional(),
       version: id,
       decisionReceipt: z.string().min(1).max(1000),
       rules: leagueRulesSchema.optional(),
@@ -127,9 +138,24 @@ export const leagueCommandSchema = z.discriminatedUnion("type", [
   z
     .object({
       ...common,
+      type: z.literal("pauseDraft"),
+      reason: z.string().min(8).max(1000),
+    })
+    .strict(),
+  z
+    .object({
+      ...common,
+      type: z.literal("resumeDraft"),
+      reason: z.string().min(8).max(1000),
+    })
+    .strict(),
+  z
+    .object({
+      ...common,
       type: z.literal("draftPick"),
       playerId: id,
       expectedPick: z.number().int().min(0),
+      expectedDraftEpoch: z.number().int().min(0).optional(),
     })
     .strict(),
   z
@@ -140,6 +166,7 @@ export const leagueCommandSchema = z.discriminatedUnion("type", [
       ...common,
       type: z.literal("autoDraftPick"),
       expectedPick: z.number().int().min(0),
+      expectedDraftEpoch: z.number().int().min(0).optional(),
     })
     .strict(),
   z

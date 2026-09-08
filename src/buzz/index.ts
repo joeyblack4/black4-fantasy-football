@@ -79,11 +79,12 @@ export function planSend(
     id: string;
     communityUrl: string;
     memberPubkeys: readonly string[];
+    kind?: "dm" | "private-channel";
   },
   content: string,
   replyTo?: string,
 ): BuzzPlan {
-  validatePeer(actor, peer);
+  validatePeer(actor, peer, channel.kind !== "private-channel");
   if (
     !uuid.test(channel.id) ||
     channel.communityUrl !== actor.communityUrl ||
@@ -203,13 +204,20 @@ export class BuzzReceiptService {
         return { existing: true, receipt: previous.rows[0] };
       }
       const inserted = await client.query(
-        "INSERT INTO buzz_action_receipts(id,operation_key,plan_hash,actor_pubkey,community_url,status) VALUES($1,$2,$3,$4,$5,'prepared') RETURNING *",
+        "INSERT INTO buzz_action_receipts(id,operation_key,plan_hash,actor_pubkey,community_url,status,channel_id,expected_content_hash,expected_reply_to) VALUES($1,$2,$3,$4,$5,'prepared',$6,$7,$8) RETURNING *",
         [
           randomUUID(),
           operationKey,
           planHash,
           plan.actorPubkey,
           plan.communityUrl,
+          plan.channelId ?? null,
+          plan.stdin === undefined
+            ? null
+            : createHash("sha256").update(plan.stdin).digest("hex"),
+          plan.args.includes("--reply-to")
+            ? plan.args[plan.args.indexOf("--reply-to") + 1]
+            : null,
         ],
       );
       return { existing: false, receipt: inserted.rows[0] };
@@ -249,7 +257,7 @@ export class BuzzReceiptService {
       /* unknown external result: reconcile rather than retry */
     }
     const result = await this.db.query(
-      "UPDATE buzz_action_receipts SET status=$2,event_id=$3,channel_id=$4,updated_at=clock_timestamp() WHERE id=$1 RETURNING *",
+      "UPDATE buzz_action_receipts SET status=$2,event_id=$3,channel_id=COALESCE($4,channel_id),updated_at=clock_timestamp() WHERE id=$1 RETURNING *",
       [claim.receipt.id, status, eventId, channelId],
     );
     return {

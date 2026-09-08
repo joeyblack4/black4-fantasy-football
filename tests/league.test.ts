@@ -14,6 +14,7 @@ async function fixture(
   active = false,
   rosterSize = 2,
   freeAgentMode = "waiversOnly",
+  ruleOverrides: Record<string, unknown> = {},
 ) {
   const resource = await testDb(),
     service = new LeagueService(resource.db),
@@ -44,6 +45,7 @@ async function fixture(
       draftOrder: "snake",
       draftPickSeconds: 60,
       faabBudget: 100,
+      ...ruleOverrides,
       freeAgentMode,
       lineupSlots: [{ id: "FLEX", positions: ["RB", "WR", "TE"] }],
     },
@@ -248,10 +250,18 @@ describe("PostgreSQL authoritative league commands — synthetic fixtures", () =
       await f.db.query(
         "UPDATE leagues SET pick_deadline=clock_timestamp()-interval '1 second'",
       );
-      await code(
-        f.command(f.commissioner, { type: "autoDraftPick", expectedPick: 1 }),
-        "QUEUE_EXHAUSTED",
-      );
+      const paused = await f.command(f.commissioner, {
+        type: "autoDraftPick",
+        expectedPick: 1,
+      });
+      expect(paused.result).toMatchObject({
+        status: "paused",
+        automatic: true,
+        nextPick: 1,
+      });
+      expect(
+        (await f.service.snapshot(f.leagueId)).league.draft_paused_at,
+      ).toBeInstanceOf(Date);
     } finally {
       await f.close();
     }
@@ -776,6 +786,185 @@ describe("PostgreSQL authoritative league commands — synthetic fixtures", () =
       const state = await f.service.snapshot(f.leagueId);
       expect(state.league.current_week).toBe(2);
       expect(state.lineups[0]).toMatchObject({ week: 1, player_id: "p0" });
+    } finally {
+      await f.close();
+    }
+  });
+  it("supports commissioner pause/resume with receipts, remaining time and stale-epoch rejection", async () => {
+    const f = await fixture();
+    try {
+      await code(
+        f.command(f.owners[0], {
+          type: "pauseDraft",
+          reason: "Owner cannot pause the league",
+        }),
+        "FORBIDDEN",
+      );
+      await code(
+        f.command(
+          { ...f.commissioner, role: "system" },
+          { type: "pauseDraft", reason: "System cannot manually pause" },
+        ),
+        "FORBIDDEN",
+      );
+      const paused = await f.command(
+        f.commissioner,
+        { type: "pauseDraft", reason: "Commissioner technical interruption" },
+        "pause-once",
+      );
+      expect(paused.result).toMatchObject({
+        status: "paused",
+        automatic: false,
+      });
+      expect(Number(paused.result.remainingMs)).toBeGreaterThan(0);
+      await code(
+        f.command(f.owners[0], {
+          type: "draftPick",
+          expectedPick: 0,
+          playerId: "p0",
+        }),
+        "DRAFT_PAUSED",
+      );
+      expect(
+        (
+          await f.command(
+            f.commissioner,
+            {
+              type: "pauseDraft",
+              reason: "Commissioner technical interruption",
+            },
+            "pause-once",
+          )
+        ).replayed,
+      ).toBe(true);
+      const resumed = await f.command(f.commissioner, {
+        type: "resumeDraft",
+        reason: "Commissioner verified recovery",
+      });
+      expect(resumed.result).toMatchObject({
+        status: "drafting",
+        draftEpoch: 1,
+      });
+      await code(
+        f.command(f.owners[0], {
+          type: "draftPick",
+          expectedPick: 0,
+          expectedDraftEpoch: 0,
+          playerId: "p0",
+        }),
+        "STALE_DRAFT_EPOCH",
+      );
+      await f.command(f.owners[0], {
+        type: "draftPick",
+        expectedPick: 0,
+        expectedDraftEpoch: 1,
+        playerId: "p0",
+      });
+      const state = await f.service.snapshot(f.leagueId);
+      expect(state.picks).toHaveLength(1);
+      expect(state.league.draft_paused_at).toBeNull();
+    } finally {
+      await f.close();
+    }
+  });
+  it("enforces ratified trade deadlines on proposals and acceptance while allowing offer cancellation", async () => {
+    const f = await fixture(true, 2, "waiversOnly", {
+      tradeDeadlineAt: new Date(Date.now() + 60000).toISOString(),
+    });
+    try {
+      await f.command(f.owners[0], {
+        type: "proposeTrade",
+        tradeId: "deadline",
+        toTeamId: "team-1",
+        givePlayers: ["p0"],
+        receivePlayers: ["p1"],
+        expiresAt: new Date(Date.now() + 120000).toISOString(),
+      });
+      // Synthetic fixture clock boundary, not a commissioner rule-edit command.
+      await f.db.query(
+        "UPDATE leagues SET rules=jsonb_set(rules,'{tradeDeadlineAt}',to_jsonb((clock_timestamp()-interval '1 second')::text))",
+      );
+      await code(
+        f.command(f.owners[1], { type: "acceptTrade", tradeId: "deadline" }),
+        "TRADE_DEADLINE_PASSED",
+      );
+      await code(
+        f.command(f.owners[2], {
+          type: "proposeTrade",
+          tradeId: "late",
+          toTeamId: "team-3",
+          givePlayers: ["p2"],
+          receivePlayers: ["p3"],
+          expiresAt: new Date(Date.now() + 60000).toISOString(),
+        }),
+        "TRADE_DEADLINE_PASSED",
+      );
+      await f.command(f.owners[0], {
+        type: "cancelTrade",
+        tradeId: "deadline",
+      });
+      expect(
+        (await f.service.snapshot(f.leagueId)).rosters.find(
+          (r) => r.player_id === "p0",
+        )!.team_id,
+      ).toBe("team-0");
+    } finally {
+      await f.close();
+    }
+  });
+  it("holds newly dropped players against immediate first-come acquisition without partial roster loss", async () => {
+    const f = await fixture(true, 2, "scheduledFirstCome", {
+      droppedPlayerHoldHours: 24,
+    });
+    try {
+      await f.command(f.commissioner, {
+        type: "openFreeAgency",
+        windowId: "holds",
+        opensAt: new Date(Date.now() - 1000).toISOString(),
+        closesAt: new Date(Date.now() + 60000).toISOString(),
+      });
+      await f.command(f.owners[0], {
+        type: "addFreeAgent",
+        windowId: "holds",
+        addPlayerId: "p24",
+        dropPlayerId: "p0",
+      });
+      const state = await f.service.snapshot(f.leagueId, f.owners[1]);
+      expect(state.playerHolds).toMatchObject([
+        {
+          player_id: "p0",
+          dropping_team_id: "team-0",
+          reason: "free_agent_drop",
+        },
+      ]);
+      await code(
+        f.command(f.owners[1], {
+          type: "addFreeAgent",
+          windowId: "holds",
+          addPlayerId: "p0",
+          dropPlayerId: "p1",
+        }),
+        "PLAYER_ON_HOLD",
+      );
+      expect(
+        (await f.service.snapshot(f.leagueId)).rosters.find(
+          (r) => r.player_id === "p1",
+        )!.team_id,
+      ).toBe("team-1");
+      await f.db.query(
+        "UPDATE league_player_holds SET expires_at=clock_timestamp()-interval '1 second'",
+      );
+      await f.command(f.owners[1], {
+        type: "addFreeAgent",
+        windowId: "holds",
+        addPlayerId: "p0",
+        dropPlayerId: "p1",
+      });
+      expect(
+        (await f.service.snapshot(f.leagueId)).rosters.find(
+          (r) => r.player_id === "p0",
+        )!.team_id,
+      ).toBe("team-1");
     } finally {
       await f.close();
     }

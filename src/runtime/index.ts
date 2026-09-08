@@ -1,13 +1,20 @@
+import { enqueueFranchise } from "../franchise/outbox.js";
+import type { FranchiseAction } from "../franchise/schema.js";
 import { enqueueFootball } from "./football-outbox.js";
 import type { FootballAction } from "./football-schema.js";
 import { createHash, randomUUID } from "node:crypto";
 import { transaction, type Db, type Tx } from "../db.js";
 
+export type Priority = "urgent" | "normal" | "background";
 export type Job = {
   id: string;
   agentId: string;
   causalId: string;
-  kind: "appointment" | "event" | "message";
+  kind: "appointment" | "event" | "message" | "staff";
+  priority?: Priority;
+  role?: string;
+  task?: string;
+  parentJobId?: string;
   payload: Record<string, unknown>;
   dueAt: Date;
   sourceOccurredAt: Date | null;
@@ -22,10 +29,13 @@ export type Job = {
 };
 export type Action =
   | FootballAction
+  | FranchiseAction
+  | { type: "delegate"; causalId: string; role: string; task: string }
   | { type: "cancel"; causalId: string }
   | { type: "remember"; key: string; content: string }
   | {
       type: "schedule";
+      priority?: "normal" | "background";
       causalId: string;
       dueAt: string;
       payload: Record<string, unknown>;
@@ -39,6 +49,7 @@ export type Action =
       replyTo?: string;
     };
 export type ScheduleInput = {
+  priority?: "normal" | "background";
   causalId: string;
   dueAt: Date | string;
   payload: Record<string, unknown>;
@@ -132,6 +143,10 @@ function mapped(r: any): Job {
     workerId: r.worker_id,
     leaseUntil: r.lease_until,
     model: r.model,
+    priority: r.priority ?? "normal",
+    role: r.staff_role ?? undefined,
+    task: r.staff_task ?? undefined,
+    parentJobId: r.parent_job_id ?? undefined,
     memory: r.memory ?? [],
     recentMessages: r.recentMessages ?? [],
     commitments: r.commitments ?? [],
@@ -175,18 +190,26 @@ export class RuntimeStore {
     body: Record<string, unknown>,
     due: Date | string | null,
     source?: Date | string,
+    priority: Priority = "normal",
+    staff?: { parentJobId: string; role: string; task: string },
   ) {
     key(causalId);
     payload(body);
+    assert(
+      ["urgent", "normal", "background"].includes(priority),
+      "INVALID_PRIORITY",
+    );
     const fingerprint = hash({
       kind,
       body,
       due: due === null ? null : new Date(due).toISOString(),
       source: source ? new Date(source).toISOString() : null,
+      ...(priority !== "normal" ? { priority } : {}),
+      ...(staff ? { staff } : {}),
     });
     const id = randomUUID();
     const inserted = await tx.query(
-      "INSERT INTO runtime_jobs(id,agent_id,causal_id,fingerprint,kind,payload,due_at,source_occurred_at) VALUES($1,$2,$3,$4,$5,$6,COALESCE($7::timestamptz,clock_timestamp()),$8) ON CONFLICT(agent_id,causal_id) DO NOTHING RETURNING *",
+      "INSERT INTO runtime_jobs(id,agent_id,causal_id,fingerprint,kind,payload,due_at,source_occurred_at,priority,parent_job_id,staff_role,staff_task) VALUES($1,$2,$3,$4,$5,$6,COALESCE($7::timestamptz,clock_timestamp()),$8,$9,$10,$11,$12) ON CONFLICT(agent_id,causal_id) DO NOTHING RETURNING *",
       [
         id,
         agentId,
@@ -196,6 +219,10 @@ export class RuntimeStore {
         JSON.stringify(body),
         due,
         source ?? null,
+        priority,
+        staff?.parentJobId ?? null,
+        staff?.role ?? null,
+        staff?.task ?? null,
       ],
     );
     const row =
@@ -213,7 +240,11 @@ export class RuntimeStore {
         [row.id],
       );
     if (inserted.rowCount)
-      await receipt(tx, "job.enqueued", agentId, row.id, { kind, causalId });
+      await receipt(tx, "job.enqueued", agentId, row.id, {
+        kind,
+        causalId,
+        priority,
+      });
     return row;
   }
   async requireLiveBinding(agentId: string) {
@@ -272,6 +303,12 @@ export class RuntimeStore {
     return a;
   }
   private async schedule(tx: Tx, actor: string, input: ScheduleInput) {
+    assert(
+      input.priority === undefined ||
+        input.priority === "normal" ||
+        input.priority === "background",
+      "OWNER_PRIORITY_FORBIDDEN",
+    );
     const due = new Date(input.dueAt);
     assert(Number.isFinite(+due), "INVALID_DUE_AT");
     // A bounded backlog prevents an owner from filling storage or spawning unbounded future work.
@@ -295,6 +332,8 @@ export class RuntimeStore {
       "appointment",
       input.payload,
       due,
+      undefined,
+      input.priority ?? "normal",
     );
   }
   /** Trusted event adapter: actor identity must come from authenticated adapter configuration. */
@@ -303,6 +342,7 @@ export class RuntimeStore {
     causalId: string;
     payload: Record<string, unknown>;
     sourceOccurredAt?: Date | string;
+    priority?: Priority;
   }) {
     return transaction(this.db, async (tx) => {
       await this.lockAgent(tx, input.agentId);
@@ -314,6 +354,7 @@ export class RuntimeStore {
         input.payload,
         null,
         input.sourceOccurredAt,
+        input.priority ?? "normal",
       );
     });
   }
@@ -324,6 +365,8 @@ export class RuntimeStore {
       agentId: string;
       causalId: string;
       payload: Record<string, unknown>;
+      priority?: Priority;
+      sourceOccurredAt?: Date | string;
     },
   ) {
     // No model authority is accepted here; adapters must derive recipients from persisted records.
@@ -342,6 +385,8 @@ export class RuntimeStore {
       "event",
       input.payload,
       null,
+      input.sourceOccurredAt,
+      input.priority ?? "normal",
     );
   }
 
@@ -514,6 +559,7 @@ export class RuntimeStore {
     leaseMs = 30000,
     model?: string,
     allowedAgentIds?: string[],
+    onlyCanaryJobId?: string,
   ): Promise<Job | null> {
     if (allowedAgentIds !== undefined) {
       assert(allowedAgentIds.length <= 100, "INVALID_WORKER_SCOPE");
@@ -528,8 +574,8 @@ export class RuntimeStore {
       // Lock the franchise first: two workers cannot run different turns of the same owner concurrently.
       const candidate = (
         await tx.query(
-          `SELECT a.id FROM runtime_agents a WHERE a.enabled AND a.kind='ai' AND ($1::text IS NULL OR a.model=$1) AND ($2::text[] IS NULL OR a.id=ANY($2::text[])) AND EXISTS (SELECT 1 FROM runtime_jobs j WHERE j.agent_id=a.id AND j.status IN ('pending','running') AND j.due_at<=clock_timestamp() AND (j.status='pending' OR j.lease_until<=clock_timestamp())) AND NOT EXISTS (SELECT 1 FROM runtime_jobs r WHERE r.agent_id=a.id AND r.status='running' AND r.lease_until>clock_timestamp()) ORDER BY a.id FOR NO KEY UPDATE OF a SKIP LOCKED LIMIT 1`,
-          [model ?? null, allowedAgentIds ?? null],
+          `SELECT a.id FROM runtime_agents a JOIN LATERAL (SELECT priority_rank,due_at FROM runtime_jobs p WHERE p.agent_id=a.id AND (($3::uuid IS NULL AND p.execution_mode='owner') OR (p.id=$3 AND p.execution_mode='provider_canary')) AND p.status IN ('pending','running') AND p.due_at<=clock_timestamp() AND (p.status='pending' OR p.lease_until<=clock_timestamp()) ORDER BY priority_rank DESC,due_at,id LIMIT 1) ready ON true WHERE a.enabled AND a.kind='ai' AND ($1::text IS NULL OR a.model=$1) AND ($2::text[] IS NULL OR a.id=ANY($2::text[])) AND EXISTS (SELECT 1 FROM runtime_jobs j WHERE j.agent_id=a.id AND j.status IN ('pending','running') AND j.due_at<=clock_timestamp() AND (j.status='pending' OR j.lease_until<=clock_timestamp())) AND NOT EXISTS (SELECT 1 FROM runtime_jobs r WHERE r.agent_id=a.id AND r.status='running' AND r.lease_until>clock_timestamp()) ORDER BY ready.priority_rank DESC,ready.due_at,a.id FOR NO KEY UPDATE OF a SKIP LOCKED LIMIT 1`,
+          [model ?? null, allowedAgentIds ?? null, onlyCanaryJobId ?? null],
         )
       ).rows[0];
       if (!candidate) return null;
@@ -546,8 +592,8 @@ export class RuntimeStore {
         return null;
       const job = (
         await tx.query(
-          "SELECT * FROM runtime_jobs WHERE agent_id=$1 AND status IN ('pending','running') AND due_at<=clock_timestamp() AND (status='pending' OR lease_until<=clock_timestamp()) ORDER BY due_at,id FOR UPDATE LIMIT 1",
-          [candidate.id],
+          "SELECT * FROM runtime_jobs WHERE agent_id=$1 AND (($2::uuid IS NULL AND execution_mode='owner') OR (id=$2 AND execution_mode='provider_canary')) AND status IN ('pending','running') AND due_at<=clock_timestamp() AND (status='pending' OR lease_until<=clock_timestamp()) ORDER BY priority_rank DESC,due_at,id FOR UPDATE LIMIT 1",
+          [candidate.id, onlyCanaryJobId ?? null],
         )
       ).rows[0];
       if (!job) return null;
@@ -567,6 +613,17 @@ export class RuntimeStore {
           [job.id],
         );
         await receipt(tx, "job.dead", job.agent_id, job.id);
+        if (job.kind === "staff")
+          await this.staffFailure(
+            tx,
+            {
+              id: job.id,
+              agentId: job.agent_id,
+              parentJobId: job.parent_job_id,
+              role: job.staff_role,
+            },
+            "ATTEMPTS_EXHAUSTED",
+          );
         return null;
       }
       const r = (
@@ -588,6 +645,7 @@ export class RuntimeStore {
         workerId,
         fence: r.fence,
         attempts: r.attempts,
+        priority: r.priority,
         queueDelayMs: Math.max(0, +r.claimed_at - +r.due_at),
       });
       const memory = (
@@ -633,6 +691,11 @@ export class RuntimeStore {
         r.fence === claim.fence &&
         r.live,
       "STALE_CLAIM",
+    );
+    assert(
+      r.kind === claim.kind &&
+        (r.parent_job_id ?? undefined) === (claim.parentJobId ?? undefined),
+      "CLAIM_CONTEXT_CHANGED",
     );
     assert(a.kind === "ai", "HUMAN_CANNOT_BE_INVOKED");
     assert(a.model === claim.model, "MODEL_CHANGED");
@@ -705,6 +768,11 @@ export class RuntimeStore {
     assert(result.summary.length <= 8000, "SUMMARY_LIMIT");
     return transaction(this.db, async (tx) => {
       await this.validClaim(tx, claim);
+      if (claim.kind === "staff")
+        assert(
+          result.actions.every((a) => a.type === "remember"),
+          "STAFF_ACTION_FORBIDDEN",
+        );
       const r = (
         await tx.query(
           "SELECT * FROM runtime_reservations WHERE id=$1 FOR UPDATE",
@@ -733,12 +801,27 @@ export class RuntimeStore {
           await this.schedule(tx, claim.agentId, action);
         else if (action.type === "message")
           await this.send(tx, claim.agentId, action);
+        else if (action.type === "delegate")
+          await this.delegate(tx, claim, action);
+        else if (
+          ["governance", "brand", "service_request", "public_draft"].includes(
+            action.type,
+          )
+        )
+          await enqueueFranchise(tx, claim, action as FranchiseAction);
         else if (action.type === "football")
           await enqueueFootball(tx, claim, action);
         else if (action.type === "cancel")
           await this.cancel(tx, claim.agentId, action.causalId);
         else if (action.type === "remember")
-          await this.remember(tx, claim.agentId, action.key, action.content);
+          await this.remember(
+            tx,
+            claim.agentId,
+            claim.kind === "staff"
+              ? "staff/" + claim.id.slice(0, 8) + "/" + action.key.slice(0, 70)
+              : action.key,
+            action.content,
+          );
         else throw new RuntimeError("UNKNOWN_ACTION");
       }
       await tx.query(
@@ -753,6 +836,23 @@ export class RuntimeStore {
         "UPDATE runtime_jobs SET status='completed',completed_at=clock_timestamp(),lease_until=NULL WHERE id=$1",
         [claim.id],
       );
+      if (claim.kind === "staff")
+        await this.enqueue(
+          tx,
+          claim.agentId,
+          "staff-result:" + claim.id,
+          "event",
+          {
+            kind: "staff.completed",
+            staffJobId: claim.id,
+            parentJobId: claim.parentJobId,
+            role: claim.role,
+            summary: result.summary,
+            model: claim.model,
+            synthetic: result.synthetic,
+          },
+          null,
+        );
       await receipt(tx, "job.completed", claim.agentId, claim.id, {
         driver: result.driver,
         synthetic: result.synthetic,
@@ -762,6 +862,85 @@ export class RuntimeStore {
         actions: result.actions.length,
       });
     });
+  }
+  private async staffFailure(
+    tx: Tx,
+    job: { id: string; agentId: string; parentJobId?: string; role?: string },
+    error: string,
+  ) {
+    await this.enqueue(
+      tx,
+      job.agentId,
+      "staff-failed:" + job.id,
+      "event",
+      {
+        kind: "staff.failed",
+        staffJobId: job.id,
+        parentJobId: job.parentJobId,
+        role: job.role,
+        error,
+      },
+      null,
+    );
+  }
+  private async delegate(
+    tx: Tx,
+    claim: Job,
+    input: { causalId: string; role: string; task: string },
+  ) {
+    assert(claim.kind !== "staff", "STAFF_RECURSION_FORBIDDEN");
+    key(input.causalId);
+    assert(
+      typeof input.role === "string" &&
+        input.role.length > 0 &&
+        input.role.length <= 80 &&
+        typeof input.task === "string" &&
+        input.task.length > 0 &&
+        input.task.length <= 12000,
+      "INVALID_STAFF_TASK",
+    );
+    const causalId =
+      "staff:" + hash({ parent: claim.id, causalId: input.causalId });
+    const old = await tx.query(
+      "SELECT 1 FROM runtime_jobs WHERE agent_id=$1 AND causal_id=$2",
+      [claim.agentId, causalId],
+    );
+    if (!old.rowCount) {
+      assert(
+        (
+          await tx.query(
+            "SELECT count(*)::int AS n FROM runtime_jobs WHERE agent_id=$1 AND kind='staff' AND status IN ('pending','running')",
+            [claim.agentId],
+          )
+        ).rows[0].n < 4,
+        "STAFF_BACKLOG_LIMIT",
+      );
+      assert(
+        (
+          await tx.query(
+            "SELECT count(*)::int AS n FROM runtime_jobs WHERE parent_job_id=$1",
+            [claim.id],
+          )
+        ).rows[0].n < 4,
+        "STAFF_PARENT_LIMIT",
+      );
+    }
+    return this.enqueue(
+      tx,
+      claim.agentId,
+      causalId,
+      "staff",
+      {
+        kind: "staff.task",
+        role: input.role,
+        task: input.task,
+        parentJobId: claim.id,
+      },
+      null,
+      undefined,
+      "background",
+      { parentJobId: claim.id, role: input.role, task: input.task },
+    );
   }
   private async remember(
     tx: Tx,
@@ -977,6 +1156,8 @@ export class RuntimeStore {
         }
       }
       const retry = options.retryable && claim.attempts < 3;
+      if (!retry && claim.kind === "staff")
+        await this.staffFailure(tx, claim, error.slice(0, 1000));
       await tx.query(
         "UPDATE runtime_jobs SET status=$2,error=$3,lease_until=NULL,due_at=clock_timestamp()+$4*interval '1 millisecond' WHERE id=$1",
         [claim.id, retry ? "pending" : "dead", error.slice(0, 1000), delay],
@@ -999,6 +1180,7 @@ export class RuntimeStore {
     id: string,
     actualMicros: number,
     evidence: string,
+    verify?: (tx: Tx) => Promise<void>,
   ) {
     money(actualMicros);
     assert(
@@ -1021,6 +1203,7 @@ export class RuntimeStore {
         )
       ).rows[0];
       assert(r.status === "uncertain", "NOT_UNCERTAIN");
+      await verify?.(tx);
       await tx.query(
         "UPDATE runtime_reservations SET status='settled',actual_micros=$2 WHERE id=$1",
         [id, actualMicros],

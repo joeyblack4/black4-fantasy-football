@@ -16,6 +16,8 @@ function driver(reply: any, override: Record<string, unknown> = {}) {
     requests,
     driver: new OpenRouterDriver("provider/model", {
       apiKey: "synthetic-secret",
+      providerSlug: "synthetic-provider",
+      reportedProviderNames: ["Synthetic Provider"],
       tariff: {
         inputUsdPerMillion: 1,
         outputUsdPerMillion: 3,
@@ -35,6 +37,7 @@ function driver(reply: any, override: Record<string, unknown> = {}) {
 }
 const response = {
   id: "synthetic-generation",
+  provider: "Synthetic Provider",
   model: "provider/model",
   usage: { cost: 0.000123 },
   choices: [
@@ -123,5 +126,216 @@ describe("optional provider request contract (fake transport, no live inference)
         ],
       }).driver.run(job),
     ).rejects.toThrow();
+  });
+});
+
+it("rejects a different serving provider while retaining the observed charge", async () => {
+  const x = driver({ ...response, provider: "Unapproved Endpoint" });
+  await expect(x.driver.run(job)).rejects.toMatchObject({
+    message: "PROVIDER_SERVING_IDENTITY_MISMATCH",
+    costMicros: 123,
+  });
+  expect(x.requests[0].provider.only).toEqual(["synthetic-provider"]);
+  expect(x.requests[0].provider.require_parameters).toBe(true);
+});
+it("runs a bounded read tool then counts every model call in the turn", async () => {
+  let n = 0,
+    reads = 0;
+  const x = driver(response, {
+    readTools: [
+      {
+        name: "source_read",
+        description: "Read fixture",
+        parameters: { type: "object", properties: {} },
+        execute: async () => {
+          reads++;
+          return { url: "https://example.org", status: "synthetic" };
+        },
+      },
+    ],
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify(
+          n++ === 0
+            ? {
+                ...response,
+                choices: [
+                  {
+                    finish_reason: "tool_calls",
+                    message: {
+                      tool_calls: [
+                        {
+                          id: "read-one",
+                          type: "function",
+                          function: { name: "source_read", arguments: "{}" },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }
+            : response,
+        ),
+      ),
+  });
+  expect((await x.driver.run(job)).costMicros).toBe(246);
+  expect(reads).toBe(1);
+  expect(n).toBe(2);
+});
+it("never executes a read tool returned by a mismatched provider", async () => {
+  let reads = 0;
+  const x = driver(
+    {
+      ...response,
+      provider: "wrong",
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            tool_calls: [
+              {
+                id: "t",
+                type: "function",
+                function: { name: "source_read", arguments: "{}" },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      readTools: [
+        {
+          name: "source_read",
+          description: "Read fixture",
+          parameters: { type: "object" },
+          execute: async () => {
+            reads++;
+            return {};
+          },
+        },
+      ],
+    },
+  );
+  await expect(x.driver.run(job)).rejects.toThrow("SERVING_IDENTITY");
+  expect(reads).toBe(0);
+});
+it("retains earlier call charges when the final output is invalid", async () => {
+  let n = 0;
+  const x = driver(response, {
+    readTools: [
+      {
+        name: "read",
+        description: "fixture",
+        parameters: { type: "object" },
+        execute: async () => ({}),
+      },
+    ],
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify(
+          n++ === 0
+            ? {
+                ...response,
+                choices: [
+                  {
+                    finish_reason: "tool_calls",
+                    message: {
+                      tool_calls: [
+                        {
+                          id: "one",
+                          type: "function",
+                          function: { name: "read", arguments: "{}" },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }
+            : {
+                ...response,
+                choices: [
+                  { finish_reason: "length", message: { content: "{}" } },
+                ],
+              },
+        ),
+      ),
+  });
+  await expect(x.driver.run(job)).rejects.toMatchObject({ costMicros: 246 });
+});
+
+it("rejects an unapproved response provider even when generation metadata names the approved provider", async () => {
+  const registry = {
+    preflight: async () => ({
+      document: {
+        providerSlug: "synthetic-provider",
+        model: "provider/model",
+        reportedProviderNames: ["Synthetic Provider"],
+        quantization: null,
+        toolPermissions: [],
+      },
+    }),
+    begin: async () => "fixture-call",
+    observe: async () => {},
+  };
+  const x = driver(response, {
+    identity: { manifestId: "fixture-manifest", registry, canary: true },
+    fetchImpl: async (url: string) =>
+      new Response(
+        JSON.stringify(
+          url.includes("/generation?")
+            ? {
+                data: {
+                  id: response.id,
+                  model: response.model,
+                  provider_name: "Synthetic Provider",
+                  total_cost: 0.000123,
+                },
+              }
+            : { ...response, provider: "Unapproved Endpoint" },
+        ),
+      ),
+  });
+  await expect(x.driver.run(job)).rejects.toMatchObject({
+    message: "PROVIDER_SERVING_IDENTITY_MISMATCH",
+    costMicros: 123,
+  });
+});
+
+it("does not replace a known response charge with metadata from another generation", async () => {
+  const registry = {
+    preflight: async () => ({
+      document: {
+        providerSlug: "synthetic-provider",
+        model: "provider/model",
+        reportedProviderNames: ["Synthetic Provider"],
+        quantization: null,
+        toolPermissions: [],
+      },
+    }),
+    begin: async () => "fixture-call",
+    observe: async () => {},
+  };
+  const x = driver(response, {
+    identity: { manifestId: "fixture-manifest", registry, canary: true },
+    fetchImpl: async (url: string) =>
+      new Response(
+        JSON.stringify(
+          url.includes("/generation?")
+            ? {
+                data: {
+                  id: "different-generation",
+                  model: response.model,
+                  provider_name: "Synthetic Provider",
+                  total_cost: 0,
+                },
+              }
+            : response,
+        ),
+      ),
+  });
+  await expect(x.driver.run(job)).rejects.toMatchObject({
+    message: "PROVIDER_GENERATION_ID_MISMATCH",
+    costMicros: 123,
   });
 });

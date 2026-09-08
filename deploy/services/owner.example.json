@@ -1,0 +1,13 @@
+{
+  "environment": {
+    "FOOTBALL_LEAGUE_ID": "black4-fantasy-2026",
+    "FOOTBALL_MANIFEST_ID": "replace-with-active-manifest-uuid",
+    "FOOTBALL_TARIFF_FILE": "/absolute/private/path/model-tariff.json",
+    "FOOTBALL_TURN_RESERVATION_MICROS": "100000",
+    "FOOTBALL_MAX_OUTPUT_TOKENS": "4000"
+  },
+  "secretFiles": {
+    "DATABASE_URL": "/absolute/private/path/database-url.host",
+    "B4_LEAGUE_OPENAI_INFERENCE": "/absolute/private/path/B4_LEAGUE_OPENAI_INFERENCE.key"
+  }
+}

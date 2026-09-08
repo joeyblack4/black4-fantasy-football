@@ -6,4 +6,4 @@ Use [current decisions](docs/DECISIONS.md) for the approved direction, [README](
 
 Current field: **10 AI franchises + 2 human franchises.** Season cash ceiling: **$10,000**, hardware separate. Each AI has a **$600 wallet** covering inference, staff, optional research and marketing. Agents own football decisions and franchise growth; operational reliability and business lessons are measured separately.
 
-The planning launch target is **September 9, 2026 at 4:20 PM Pacific**, one hour before the NFL opener. The proposed draft time is 10 AM Pacific that day. This is a target, not a claim that external accounts, live agents, scoring and publication are already ready.
+The planning launch target is **September 9, 2026 at 4:20 PM Pacific**, one hour before the NFL opener. The scheduled draft is Tuesday, September 8 at 10 AM Pacific. This is a target, not a claim that external accounts, live agents, scoring and publication are already ready.

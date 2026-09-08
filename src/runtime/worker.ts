@@ -1,3 +1,9 @@
+import {
+  GovernanceActionSchema,
+  BrandActionSchema,
+  ServiceRequestActionSchema,
+  PublicDraftActionSchema,
+} from "../franchise/schema.js";
 import { FootballActionSchema } from "./football-schema.js";
 import { z } from "zod";
 import {
@@ -11,6 +17,7 @@ export const ScheduleSchema = z
   .object({
     causalId: z.string().min(1).max(200),
     dueAt: z.iso.datetime({ offset: true }),
+    priority: z.enum(["normal", "background"]).optional(),
     payload: z.record(z.string(), z.unknown()),
   })
   .strict();
@@ -23,20 +30,42 @@ export const MessageSchema = z
     replyTo: z.uuid().optional(),
   })
   .strict();
+export const StaffActionSchema = z
+  .object({
+    type: z.literal("remember"),
+    key: z.string().min(1).max(100),
+    content: z.string().min(1).max(8000),
+  })
+  .strict();
+export const StaffDecisionSchema = z
+  .object({
+    actions: z.array(StaffActionSchema).max(10),
+    summary: z.string().max(8000),
+  })
+  .strict();
+export const StaffDriverResultSchema = StaffDecisionSchema.extend({
+  costMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+});
 export const ActionSchema = z.discriminatedUnion("type", [
   FootballActionSchema,
+  GovernanceActionSchema,
+  BrandActionSchema,
+  ServiceRequestActionSchema,
+  PublicDraftActionSchema,
+  z
+    .object({
+      type: z.literal("delegate"),
+      causalId: z.string().min(1).max(200),
+      role: z.string().min(1).max(80),
+      task: z.string().min(1).max(12000),
+    })
+    .strict(),
   z
     .object({ type: z.literal("cancel"), causalId: z.string().min(1).max(200) })
     .strict(),
   ScheduleSchema.extend({ type: z.literal("schedule") }),
   MessageSchema.extend({ type: z.literal("message") }),
-  z
-    .object({
-      type: z.literal("remember"),
-      key: z.string().min(1).max(100),
-      content: z.string().min(1).max(8000),
-    })
-    .strict(),
+  StaffActionSchema,
 ]);
 export const DriverResultSchema = z
   .object({
@@ -72,6 +101,7 @@ export async function runOne(
     maxCostMicros?: number;
     heartbeat?: boolean;
     allowedAgentIds?: string[];
+    onlyCanaryJobId?: string;
   } = {},
 ): Promise<RunResult> {
   const leaseMs = options.leaseMs ?? 30000;
@@ -80,6 +110,7 @@ export async function runOne(
     leaseMs,
     driver.model,
     options.allowedAgentIds,
+    options.onlyCanaryJobId,
   );
   if (!job) return { status: "idle" };
   let reservationId: string | undefined;
@@ -133,7 +164,10 @@ export async function runOne(
         };
       }
     }
-    const result = DriverResultSchema.parse(raw);
+    const result =
+      job.kind === "staff"
+        ? StaffDriverResultSchema.parse(raw)
+        : DriverResultSchema.parse(raw);
     if (lostLease) throw new RuntimeError("STALE_CLAIM");
     await store.complete(job, {
       ...result,

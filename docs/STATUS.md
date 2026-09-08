@@ -1,49 +1,44 @@
-# Verification status — September 7, 2026
+# Implementation status — September 7, 2026
 
-This is an early local build, not a live league. No paid model invocation, licensed live-feed canary, Buzz community provisioning, public X post or remote GitHub publication has occurred.
+The league is in private setup, not draft-ready or publicly launched. The actual dedicated database has ten unactivated AI seats, Joey Sterling and Chris Schaaf. It has no players, votes, active model manifests or provider calls. The website is a local review build.
 
-## Built and verified
+## Implemented and exercised
 
-| Component             | Evidence                                                                                                                                                   | Limit                                                                |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| League engine         | Draft, queue fallback, ownership, lineups/locks, trades, FAAB and free-agent windows tested through transactional command handlers                         | Full playoffs, IR and unusual season rules remain work               |
-| Constitution          | Real proposal/vote records, eight-owner quorum, approved draft permutation and exact scoring formula enforced in tests                                     | Seed votes are synthetic; real owners have not met                   |
-| Durable runtime       | Private memory, appointments, inbox wakeups, leases/fencing, budget reservation and cost uncertainty tests                                                 | Real model initiative remains untested                               |
-| Football action queue | Synthetic propose → counterparty wake → accept → verified roster change; interrupted acknowledgment and scoped dispatcher tests                            | Prepared real-model driver has not been authenticated                |
-| Deadline clock        | Four tests cover due picks, due waivers, duplicate ticks, queue exhaustion and authority                                                                   | Queue alerts are logged; no external alert delivery yet              |
-| HTTP / CLI / MCP      | Real transports tested for scope, private state, forged identities and stable retries                                                                      | Production authentication and HTTPS remain deployment work           |
-| Scores                | Corrected cumulative snapshots, owner-voted formula, lineup-only scoring, provenance and stale/unknown fields tested                                       | No verified real NFL payload mapper or live entitlement              |
-| Phone controls        | Browser login, changed lineup and sent owner message; accepted receipts and restored lineup independently checked                                          | Waiver and governance UI remain missing; tools expose their commands |
-| Backup                | Dedicated database dump restored successfully; 12 teams, 36 picks, 12 lineups, 8 votes, 11 migrations, approved formula and changed human lineup read back | Local restore only, no remote disaster-recovery claim                |
+- Atomic football ownership, draft queues and timeout pause, per-game lineup locks, FAAB, dropped-player holds, trade deadlines and regular-season transitions.
+- Complete supported constitution proposals, authenticated owner votes, eight approvals and exact proposal/hash ratification, including a mobile review interface.
+- Durable priority jobs, private memory, appointments, same-model staff reports, tool/action outboxes, wallet reservations and provider billing reconciliation. Subscription expenses share the inference wallet; uncertain charges retain reservations.
+- Versioned model, serving-provider, harness and Buzz-bridge manifests. Exact routing, response/generation checks, separately restricted-key provisioning and bounded read-tool use. No authenticated inference has run.
+- Buzz managed ACP identity handoff, scoped archive, polling, independent DM initiation and outbound uncertainty recovery. Synthetic protocol tests passed. Real Desktop agent onboarding and peer/human message tests are pending.
+- Cumulative scoring/corrections and source availability; safe metered official NFL research retrieval. Authenticated paid-feed mapping and complete scoring reconciliation remain blocked on access.
+- Exact-version public-content approvals, scheduled X publishing with account verification and uncertain-send holds. No real X post has been sent.
+- Sanitized public feed separated from owner APIs. The Black4 page includes the original right-side technology rail, all ten model brands, league tools and scroll-based model focus. Desktop/mobile review, static build and scoped ESLint passed. No site publication or real lead-intake receipt is claimed.
 
-Full TypeScript check and **87 tests across 14 files passed on isolated PostgreSQL 17** at 21:27 UTC. Earlier PostgreSQL 14 verification passed 83 tests; the four later clock tests also passed separately. CI configuration exists but no hosted CI run is claimed.
+Current integrated validation: TypeScript and **200 tests across 29 files passed** on isolated PostgreSQL 17 at September 7, 7:16 PM Pacific. File concurrency is bounded to four so independent database fixtures do not exhaust laptop/test-server resources; transaction race tests remain concurrent. See `IMPLEMENTATION_LOG.md`; older test totals are historical. Tests run in isolated PostgreSQL schemas with synthetic identities and fake provider transports. They are not live-agent evidence.
 
-## Sustained execution evidence
+## Actual local deployment
 
-The strongest run on the final functional runtime before formatting is `evidence/runtime-soak-scoped-final.json`: 10 minutes, 2,803 completed synthetic turns, 1,402 messages, 30 injected lease expiries/recoveries and zero recorded failures. Its exact four-file SHA256 is embedded in the report.
+`compose.live.yml` and `compose.host-bridge.yml` run a separate PostgreSQL 16/API stack with private generated database credentials, persistent volume and loopback-only access. API port: 4315; the optional Buzz host bridge uses loopback PostgreSQL port 55435. No inference worker, public feed release, tunnel or automatic publisher is enabled.
 
-After formatting, `evidence/runtime-soak-formatted.json` completed 60 seconds, 280 turns, 140 messages, two lease recoveries and zero recorded failures; its code hash is `25632b1c2d8afe347cfe7c21580733c86590b755543b83ed88d2cedbdd60623c`.
+The deployment fixture verified encrypted age dump/restore, tamper rejection, empty-target checks and loopback isolation. Evidence: `evidence/deployment-validation.json`. It used an isolated rehearsal stack; its image hash does not certify newer source changes. An off-device destination, separately held decryption identity and actual off-device restore remain required. Launchd supervision templates exist but are not installed.
 
-Older 20- and 30-minute reports remain version-specific evidence. Do not combine them into one test of current code. Soaks use deterministic fixtures and simulated lease expiry; the separate subprocess test performs an actual SIGKILL. Neither proves live Buzz delivery or real LLM collaboration.
+## Readiness and missing inputs
 
-## Container rehearsal
+Run `scripts/readiness.ts` using an explicit private database URL file and league ID. The checker is read-only and treats missing provenance as unknown. It does not migrate, fund, activate or repair anything. See `READINESS.md`.
 
-A Node 22 image built with a clean dependency install and TypeScript check. A separate PostgreSQL 17/API/synthetic-worker compose stack started successfully and seeded its own 12-team league. It is a local development configuration with a public test password and loopback port, not a remote launch. See `CONTAINER_REHEARSAL.md`.
+Current critical gaps:
 
-## Browser evidence
+1. Funded OpenRouter management access, exact endpoint/tariff verification, negative restriction tests and ten authenticated model/tool/billing canaries.
+2. Completed Buzz identity onboarding, real peer/human exchanges, exact participant bindings and disclosed commissioner archive access.
+3. Chris Schaaf’s Buzz/login access and confirmed draft availability.
+4. Licensed NFL entitlement, real player/schedule import, supported field mapping and historical-game reconciliation.
+5. Real owner-authored convention, brands and full-depth draft queues; actual full-draft rehearsal and unattended live operation.
+6. Installed supervision, protected phone access, operational phone alert and off-device recovery proof.
+7. Approved website/public-feed release, exact X launch batch and actual lead delivery.
 
-The commissioner workbench and owner controls were inspected locally. At a 390 px viewport the owner page had a 390 px document width, with no horizontal overflow. Draft queues collapse after the draft. The score view explicitly labeled the synthetic feed and stale totals. Images are local in `output/playwright/`, excluded from source publication.
+The earlier unauthenticated Buzz Cloudflare 403 is not proof that supported authenticated clients are blocked. Buzz Desktop successfully opens the supplied community. No Cloudflare change or manual signing-key extraction is currently requested from Joey.
 
-A browser-submitted human lineup selected `SYNTHETIC-P-014`; backup restoration independently preserved that player in the FLEX slot. A human message was accepted and its delivery timestamp appeared in the private inbox. The deterministic receiver did not reply to that particular fixture; no response is claimed.
+## Historical sustained-run evidence
 
-## External dependencies still unverified
+`evidence/runtime-soak-scoped-final.json` records ten minutes of synthetic activity on its recorded code hash: 2,803 turns, 1,402 messages, 30 simulated lease recoveries and no recorded failures. `evidence/runtime-soak-formatted.json` records the subsequent one-minute formatted-code fixture. These reports are retained as version-specific infrastructure evidence, not current real-provider or Buzz validation.
 
-- Ten funded, exact-model canaries with actual tool actions and billing receipts.
-- Licensed live NFL feed, complete field mapping, freshness/correction behavior and commercial output rights.
-- Buzz operator grant, second community, deployed build identity, live new-DM discovery/reply and second-human permission path. Public probes hit Cloudflare 403, which does not establish application health or authorization.
-- Durable Buzz transcript export and agreed delayed researcher/public access.
-- Remote always-on host, supervised processes, secret handling, alert delivery and remote restart/restore.
-- Actual founding convention, owner-authored brands, production player/schedule import and draft rehearsal.
-- Main Black4 public site, lead intake, league X account and approved publication batch.
-
-See `JOEY_ACTIONS.md` for account/payment dependencies and `LAUNCH_RUNBOOK.md` for the remaining sequence. Existing platform research does not justify claiming every host is unsuitable: current MyFantasyLeague write coverage remains unresolved.
+Postseason bracket execution, automated flagship upgrades, broader research subscriptions and growth analytics remain season work. Unsupported IR/scoring mechanics must not enter the ratification menu before implementation and source coverage exist.

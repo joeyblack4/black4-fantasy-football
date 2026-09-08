@@ -1,3 +1,5 @@
+import { roundRobin, regularSeasonSchedule } from "../league/schedule.js";
+export { roundRobin, regularSeasonSchedule } from "../league/schedule.js";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { transaction, type Db } from "../db.js";
@@ -52,34 +54,6 @@ function canonical(value: unknown): string {
 }
 const hash = (v: unknown) =>
   createHash("sha256").update(canonical(v)).digest("hex");
-/** Deterministic circle schedule, one appearance/team/round and each pair once. */
-export function roundRobin(teamIds: readonly string[]) {
-  if (
-    teamIds.length < 2 ||
-    teamIds.length > 100 ||
-    teamIds.length % 2 ||
-    new Set(teamIds).size !== teamIds.length ||
-    teamIds.some((id) => !id)
-  )
-    throw new Error("An even number of unique teams is required");
-  const rotation = [...teamIds];
-  const rounds: { homeTeamId: string; awayTeamId: string }[][] = [];
-  for (let round = 0; round < teamIds.length - 1; round++) {
-    const games = [];
-    for (let i = 0; i < teamIds.length / 2; i++) {
-      const a = rotation[i]!,
-        b = rotation[rotation.length - 1 - i]!;
-      games.push(
-        round % 2
-          ? { homeTeamId: b, awayTeamId: a }
-          : { homeTeamId: a, awayTeamId: b },
-      );
-    }
-    rounds.push(games);
-    rotation.splice(1, 0, rotation.pop()!);
-  }
-  return rounds;
-}
 export class ScoreboardService {
   constructor(private readonly db: Db) {}
   async configure(actor: Actor, input: ScoreboardConfiguration) {
@@ -114,7 +88,7 @@ export class ScoreboardService {
         [config.leagueId, config.week],
       );
       const league = await client.query(
-        "SELECT status,current_week,constitution_version,ratified_scoring_rules FROM leagues WHERE id=$1 FOR UPDATE",
+        "SELECT status,current_week,constitution_version,ratified_scoring_rules,rules FROM leagues WHERE id=$1 FOR UPDATE",
         [config.leagueId],
       );
       if (!league.rowCount) throw new Error("League is unavailable");
@@ -172,10 +146,22 @@ export class ScoreboardService {
           );
       }
       const teams = (
-        await client.query("SELECT id FROM league_teams WHERE league_id=$1", [
-          config.leagueId,
-        ])
+        await client.query(
+          "SELECT id FROM league_teams WHERE league_id=$1 ORDER BY draft_position",
+          [config.leagueId],
+        )
       ).rows.map((row) => row.id as string);
+      const schedule = regularSeasonSchedule(
+        teams,
+        league.rows[0].rules.regularSeasonWeeks ?? 14,
+      );
+      const planned = schedule.find((w) => w.week === config.week);
+      if (!planned)
+        throw new Error(
+          "Week is outside the ratified regular season; playoff mechanics are not implemented",
+        );
+      const ordered = (matches: { homeTeamId: string; awayTeamId: string }[]) =>
+        [...matches].sort((a, b) => a.homeTeamId.localeCompare(b.homeTeamId));
       const matched = config.matchups.flatMap((m) => [
         m.homeTeamId,
         m.awayTeamId,
@@ -186,6 +172,11 @@ export class ScoreboardService {
         matched.some((t) => !teams.includes(t))
       )
         throw new Error("Every team must appear in exactly one matchup");
+      if (hash(ordered(planned.matchups)) !== hash(ordered(config.matchups)))
+        throw new Error(
+          "Matchups differ from the ratified deterministic schedule",
+        );
+
       const players = await client.query(
         "SELECT id FROM league_players WHERE league_id=$1 AND id=ANY($2::text[])",
         [config.leagueId, config.playerGames.map((p) => p.playerId)],
@@ -335,6 +326,53 @@ export class ScoreboardService {
       ).rowCount
     )
       throw new Error("Observed or scored game mapping cannot change");
+  }
+  async schedule(leagueId: string) {
+    id.parse(leagueId);
+    return transaction(this.db, async (tx) => {
+      await tx.query(
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      );
+      const league = (
+        await tx.query(
+          "SELECT rules,constitution_version FROM leagues WHERE id=$1",
+          [leagueId],
+        )
+      ).rows[0];
+      if (!league || !league.constitution_version)
+        throw new Error("Ratified league schedule is unavailable");
+      const teams = (
+        await tx.query(
+          "SELECT id FROM league_teams WHERE league_id=$1 ORDER BY draft_position",
+          [leagueId],
+        )
+      ).rows.map((r) => r.id);
+      const configs = (
+        await tx.query(
+          "SELECT week,feed_id FROM scoring_configs WHERE league_id=$1 ORDER BY week",
+          [leagueId],
+        )
+      ).rows;
+      const weeks = regularSeasonSchedule(
+        teams,
+        league.rules.regularSeasonWeeks ?? 14,
+      ).map((w) => {
+        const c = configs.find((c) => c.week === w.week);
+        return {
+          ...w,
+          configurationStatus: c ? "configured" : "missing",
+          feedId: c?.feed_id ?? null,
+        };
+      });
+      return {
+        leagueId,
+        constitutionVersion: league.constitution_version,
+        algorithm: "circle-repeat-v1",
+        regularSeasonWeeks: weeks.length,
+        weeks,
+        postseason: "not-implemented",
+      };
+    });
   }
   async snapshot(leagueId: string, week: number) {
     id.parse(leagueId);

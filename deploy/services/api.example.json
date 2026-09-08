@@ -1,0 +1,9 @@
+{
+  "environment": {
+    "HOST": "127.0.0.1",
+    "PORT": "4312"
+  },
+  "secretFiles": {
+    "DATABASE_URL": "/absolute/private/path/database-url.host"
+  }
+}

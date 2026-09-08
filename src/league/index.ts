@@ -1,3 +1,4 @@
+import { leagueCapabilities, leagueCapabilityVersion } from "./capabilities.js";
 import { createHash, randomUUID } from "node:crypto";
 import { validateDecision } from "../governance/validation.js";
 import { transaction, type Db, type Tx } from "../db.js";
@@ -23,6 +24,10 @@ type League = {
   next_pick: number;
   pick_deadline: Date | null;
   constitution_version: string | null;
+  draft_paused_at: Date | null;
+  draft_pause_reason: string | null;
+  draft_pause_remaining_ms: number | null;
+  draft_epoch: number;
 };
 type Context = {
   tx: Tx;
@@ -175,7 +180,9 @@ export class LeagueService {
           command.leagueId,
           receiptId,
           verifiedActor.id,
-          command.type,
+          command.type === "autoDraftPick" && result.status === "paused"
+            ? "draftPaused"
+            : command.type,
           privateType(command.type) ? "private" : "public",
           teams,
           JSON.stringify(result),
@@ -320,6 +327,69 @@ export class LeagueService {
       [c.league.id, players, c.league.current_week],
     );
   }
+  private async pause(c: Context, reason: string, automatic: boolean) {
+    check(
+      c.league.status === "drafting" && !c.league.draft_paused_at,
+      "INVALID_STATE",
+      "Only a running draft can be paused",
+    );
+    const remaining = Math.max(
+      0,
+      (c.league.pick_deadline?.getTime() ?? c.now.getTime()) - c.now.getTime(),
+    );
+    await c.tx.query(
+      "UPDATE leagues SET draft_paused_at=$2,draft_pause_reason=$3,draft_pause_remaining_ms=$4,pick_deadline=NULL WHERE id=$1",
+      [c.league.id, c.now, reason, remaining],
+    );
+    return {
+      status: "paused",
+      reason,
+      automatic,
+      nextPick: c.league.next_pick,
+      draftEpoch: c.league.draft_epoch,
+      remainingMs: remaining,
+    };
+  }
+  private tradeOpen(c: Context) {
+    check(
+      !c.league.rules.tradeDeadlineAt ||
+        new Date(c.league.rules.tradeDeadlineAt) > c.now,
+      "TRADE_DEADLINE_PASSED",
+      "The ratified trade deadline has passed",
+    );
+  }
+  private async acquisitionAllowed(c: Context, player: string, at = c.now) {
+    const hold = (
+      await c.tx.query(
+        "SELECT expires_at FROM league_player_holds WHERE league_id=$1 AND player_id=$2",
+        [c.league.id, player],
+      )
+    ).rows[0];
+    check(
+      !hold || hold.expires_at <= at,
+      "PLAYER_ON_HOLD",
+      "Dropped player remains on a time-bound acquisition hold",
+    );
+  }
+  private async holdDropped(
+    c: Context,
+    player: string,
+    team: string,
+    reason: "waiver_drop" | "free_agent_drop",
+  ) {
+    const hours = c.league.rules.droppedPlayerHoldHours ?? 0;
+    if (hours === 0) return;
+    await c.tx.query(
+      "INSERT INTO league_player_holds(league_id,player_id,dropping_team_id,expires_at,reason) VALUES($1,$2,$3,$4,$5) ON CONFLICT(league_id,player_id) DO UPDATE SET dropping_team_id=excluded.dropping_team_id,expires_at=excluded.expires_at,reason=excluded.reason,created_at=clock_timestamp()",
+      [
+        c.league.id,
+        player,
+        team,
+        new Date(c.now.getTime() + hours * 3600000),
+        reason,
+      ],
+    );
+  }
   private async dispatch(
     c: Context,
     command: Exclude<LeagueCommand, { type: "createLeague" }>,
@@ -396,18 +466,30 @@ export class LeagueService {
           now,
           command.rules,
         );
+        check(
+          !command.proposalId || approved.proposal.id === command.proposalId,
+          "PROPOSAL_MISMATCH",
+          "Prepared decision belongs to another proposal",
+        );
+        check(
+          !command.proposalHash ||
+            approved.proposal.content_hash === command.proposalHash,
+          "PROPOSAL_MISMATCH",
+          "Prepared proposal hash differs from the reviewed version",
+        );
         const rules = approved.rules;
         const rulesHash = createHash("sha256")
           .update(
             canonical({
               rules,
               scoringRules: approved.scoringRules,
+              capabilityVersion: approved.proposal.capability_version,
               teamOrder: approved.proposal.team_order,
             }),
           )
           .digest("hex");
         await tx.query(
-          "UPDATE leagues SET rules=$2,constitution_version=$3,constitution_receipt=$4,constitution_rules_hash=$5,constitution_ratified_at=$6,ratified_scoring_rules=$7 WHERE id=$1",
+          "UPDATE leagues SET rules=$2,constitution_version=$3,constitution_receipt=$4,constitution_rules_hash=$5,constitution_ratified_at=$6,ratified_scoring_rules=$7,ratified_capability_version=$8 WHERE id=$1",
           [
             lid,
             JSON.stringify(rules),
@@ -416,6 +498,7 @@ export class LeagueService {
             rulesHash,
             now,
             JSON.stringify(approved.scoringRules),
+            approved.proposal.capability_version,
           ],
         );
         await tx.query("UPDATE league_teams SET faab=$2 WHERE league_id=$1", [
@@ -440,6 +523,7 @@ export class LeagueService {
           rulesHash,
           rules,
           scoringRules: approved.scoringRules,
+          capabilityVersion: approved.proposal.capability_version,
           teamOrder: approved.proposal.team_order,
           status: "ratified",
           ratifiedAt: now.toISOString(),
@@ -483,6 +567,41 @@ export class LeagueService {
           pickDeadline: deadline.toISOString(),
         };
       }
+      case "pauseDraft": {
+        check(
+          actor.role === "commissioner",
+          "FORBIDDEN",
+          "Only the commissioner can manually pause the draft",
+        );
+        return this.pause(c, command.reason, false);
+      }
+      case "resumeDraft": {
+        check(
+          actor.role === "commissioner",
+          "FORBIDDEN",
+          "Only the commissioner can resume a paused draft",
+        );
+        check(
+          league.status === "drafting" && league.draft_paused_at,
+          "INVALID_STATE",
+          "Draft is not paused",
+        );
+        const remaining =
+          league.draft_pause_remaining_ms ||
+          league.rules.draftPickSeconds * 1000;
+        const deadline = new Date(now.getTime() + remaining);
+        await tx.query(
+          "UPDATE leagues SET draft_paused_at=NULL,draft_pause_reason=NULL,draft_pause_remaining_ms=NULL,draft_epoch=draft_epoch+1,pick_deadline=$2 WHERE id=$1",
+          [lid, deadline],
+        );
+        return {
+          status: "drafting",
+          reason: command.reason,
+          nextPick: league.next_pick,
+          draftEpoch: league.draft_epoch + 1,
+          pickDeadline: deadline.toISOString(),
+        };
+      }
       case "setDraftQueue": {
         const team = await this.owner(c);
         check(
@@ -503,6 +622,17 @@ export class LeagueService {
           league.status === "drafting",
           "INVALID_STATE",
           "Draft is not in progress",
+        );
+        check(
+          !league.draft_paused_at,
+          "DRAFT_PAUSED",
+          "Commissioner must resume the draft before a pick can be made",
+        );
+        check(
+          command.expectedDraftEpoch === undefined ||
+            command.expectedDraftEpoch === league.draft_epoch,
+          "STALE_DRAFT_EPOCH",
+          "Draft was paused or resumed after this command was prepared",
         );
         check(
           command.expectedPick === league.next_pick,
@@ -544,11 +674,12 @@ export class LeagueService {
             "SELECT p.id FROM league_draft_queues q CROSS JOIN LATERAL unnest(q.player_ids) WITH ORDINALITY x(id,rank) JOIN league_players p ON p.league_id=q.league_id AND p.id=x.id LEFT JOIN league_rosters r ON r.league_id=q.league_id AND r.player_id=p.id WHERE q.league_id=$1 AND q.team_id=$2 AND r.player_id IS NULL ORDER BY x.rank LIMIT 1",
             [lid, team],
           );
-          check(
-            queue.rowCount,
-            "QUEUE_EXHAUSTED",
-            "Owner-authored queue is empty; a decision is required",
-          );
+          if (!queue.rowCount)
+            return this.pause(
+              c,
+              "QUEUE_EXHAUSTED: owner-authored queue has no available player",
+              true,
+            );
           player = queue.rows[0].id;
         }
         await this.existsPlayer(c, player);
@@ -705,6 +836,7 @@ export class LeagueService {
       }
       case "proposeTrade": {
         active(league);
+        this.tradeOpen(c);
         const team = await this.owner(c);
         check(
           team !== command.toTeamId,
@@ -781,6 +913,7 @@ export class LeagueService {
           "Only the designated trade participant can perform this action",
         );
         if (command.type === "acceptTrade") {
+          this.tradeOpen(c);
           check(t.expires_at > now, "EXPIRED", "Trade offer expired");
           await this.owned(c, t.from_team, t.give_players);
           await this.owned(c, t.to_team, t.receive_players);
@@ -881,6 +1014,11 @@ export class LeagueService {
           "Cannot add and drop the same player",
         );
         await this.existsPlayer(c, command.addPlayerId);
+        await this.acquisitionAllowed(
+          c,
+          command.addPlayerId,
+          period.rows[0].closes_at,
+        );
         check(
           !(
             await tx.query(
@@ -1043,6 +1181,7 @@ export class LeagueService {
           "Cannot add and drop the same player",
         );
         await this.existsPlayer(c, command.addPlayerId);
+        await this.acquisitionAllowed(c, command.addPlayerId);
         check(
           !(
             await tx.query(
@@ -1066,6 +1205,12 @@ export class LeagueService {
             [lid, command.dropPlayerId],
           );
           await this.clearFutureLineups(c, [command.dropPlayerId]);
+          await this.holdDropped(
+            c,
+            command.dropPlayerId,
+            team,
+            "free_agent_drop",
+          );
         }
         await tx.query(
           "INSERT INTO league_rosters(league_id,player_id,team_id) VALUES($1,$2,$3)",
@@ -1142,6 +1287,7 @@ export class LeagueService {
       if (!reason && claim.bid > faab) reason = "INSUFFICIENT_FAAB";
       if (!reason) {
         try {
+          await this.acquisitionAllowed(c, claim.add_player);
           await this.capacity(c, claim.team_id, claim.drop_player ? 0 : 1);
           await this.movable(c, [
             claim.add_player,
@@ -1159,6 +1305,12 @@ export class LeagueService {
             [lid, claim.drop_player],
           );
           await this.clearFutureLineups(c, [claim.drop_player]);
+          await this.holdDropped(
+            c,
+            claim.drop_player,
+            claim.team_id,
+            "waiver_drop",
+          );
         }
         await tx.query(
           "INSERT INTO league_rosters(league_id,player_id,team_id) VALUES($1,$2,$3)",
@@ -1285,6 +1437,12 @@ export class LeagueService {
           [leagueId, checkedAt],
         )
       ).rows;
+      const playerHolds = (
+        await tx.query(
+          "SELECT player_id,dropping_team_id,expires_at,reason FROM league_player_holds WHERE league_id=$1 AND expires_at>$2 ORDER BY expires_at,player_id",
+          [leagueId, checkedAt],
+        )
+      ).rows;
       const draftQueues = actor
         ? (
             await tx.query(
@@ -1295,6 +1453,12 @@ export class LeagueService {
         : [];
       return {
         league,
+        capabilities: leagueCapabilities,
+        capabilityStatus: !league.constitution_version
+          ? "unratified"
+          : league.ratified_capability_version === leagueCapabilityVersion
+            ? "current"
+            : "legacy-unverified",
         teams,
         players,
         rosters,
@@ -1304,6 +1468,7 @@ export class LeagueService {
         claims,
         draftQueues,
         games,
+        playerHolds,
         waiverPeriods,
         freeAgentWindows,
         checkedAt: checkedAt.toISOString(),
@@ -1312,3 +1477,6 @@ export class LeagueService {
   }
 }
 export { LeagueClock, type LeagueClockWork } from "./clock.js";
+
+export { leagueCapabilities, leagueCapabilityVersion } from "./capabilities.js";
+export { LeagueEventDispatcher, leagueWakeEventTypes } from "./dispatcher.js";

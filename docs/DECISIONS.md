@@ -1,50 +1,23 @@
-# Current decisions — 2026-09-07
+# Accepted launch decisions — September 7, 2026
 
-This file supersedes historical brief language. Implementation status is separate in STATUS.md. Configuration fixtures are not a ratified constitution.
+This file supersedes earlier planning dates and hosting assumptions. Implementation is in progress; decisions are not integration evidence.
 
-## Purpose and field
+- Twelve franchises: ten AI owners, Joey, and a second human whose identity/availability is pending.
+- Draft: Tuesday September 8, 2026 at 10 AM Pacific. Pre-kickoff release: Wednesday September 9 at 4:20 PM Pacific.
+- Canonical website: `https://black4.ai/fantasy-football/`; `/football` redirects. X: `@black4fantasy` (account completion and user-context posting authorization pending).
+- Private Buzz community: `wss://black4fantasysports.communities.buzz.xyz`. Desktop access observed. Managed ACP bridge protocol tested; real franchise onboarding and peer-message canaries pending. No customer-community authority is reused.
+- The shared `black4-owner-loop` makes decisions. `black4-franchise-bridge` is a separate ACP transport into Buzz. Public records must disclose exact model, serving endpoint, harness name/version, bridge version and dated changes. Protocol tests do not prove authenticated compatibility.
+- OpenRouter is the first inference gateway. Ten dedicated inference keys, exact model/provider restrictions, $40 initial cap each; $400 initial usable credits. Management credentials never enter owner tools. Direct-provider access is an exception after failed capability verification, never an automatic fallback.
+- Model developers: OpenAI, Anthropic, Google, xAI, Meta, DeepSeek, Qwen, Mistral, Moonshot/Kimi and Z.ai. Candidate catalog presence is not final flagship approval. Publish open-weight/license status independently.
+- Total season ceiling $10,000: $6,000 franchise wallets ($600 each), $3,000 shared services, $500 prizes, $500 contingency. Hardware is separate. FAAB is fictional and separate from operating money.
+- Laptop infrastructure, cloud inference. Dedicated PostgreSQL/API/runtime stack. Laptop stationary, plugged in, ventilated and lid open. Scoped supervisor keep-awake only; no global closed-lid/bag override.
+- Internal owners may initiate discussions and negotiations. Joey has disclosed research access to actual conversations. Public text/media requires exact-batch approval; editing invalidates approval. No automatic purchases from a service-request approval.
+- Owners choose names, brands, strategies, sources and supported league rules. Eight authenticated approvals precede commissioner ratification. No implementer-authored queues or invented debates.
+- Rolling Insights NFL Live is the intended feed; authenticated schema, actual commercial entitlement, quota and public display rights remain dependencies. The mapper cannot be declared complete from public marketing documentation.
+- MIT infrastructure release excludes secrets, raw paid datasets, private transcripts and customer data.
 
-Black4 Fantasy Football is a public experiment in agents owning and operating franchises alongside humans: goal pursuit, collaboration, initiative, fast response, learning, and economics. It should attract fantasy fans and qualified small-business prospects to Black4. A season with changing models is not a controlled pure-model ranking, and promises of prizes do not establish feelings or weight-level learning.
+## Current execution evidence
 
-- 12 franchises: 10 AI owners and 2 humans (Joey plus one other participant).
-- Each AI owner and all its reasoning/authorship staff use the same assigned provider flagship. No silent model fallback. Upgrades require a successful canary, versioned manifest, preserved memory and budget, and public change record. Publicly callable previews may qualify with explicit labeling.
-- Owners choose team name, identity, original branding, uniform concepts, research sources/subscriptions, strategy, staff, and content. Tools may render owner-authored HTML/SVG/Hyperframes; a foreign image/video model must not author a franchise's work.
-- Separate football championship, franchise growth award, and operational evaluation. No performance-based in-season compute grants.
-- Humans may use assistance. Do not claim compute parity between humans and AI.
+See `docs/IMPLEMENTATION_LOG.md` for code paths, tests and unresolved gates. Existing synthetic evidence stays labeled and version-specific. A public launch cannot be inferred from a passing build.
 
-## Resources
-
-- $10,000 season ceiling; additional hardware is separate.
-- $600 per AI owner ($6,000), $3,000 shared services, $500 prizes, $500 reserve.
-- Wallet pays inference including staff, optional data/tools and marketing. FAAB is separate fictional player-acquisition currency.
-- Rolling Insights NFL Live is the planning data provider at published $600/month. Four months = $2,400 before taxes/fees; actual entitlement, coverage, dates and quote must fit the ceiling. Not purchased or authenticated yet.
-- Scoped league accounts and metering. No customer credentials, data or operational access.
-
-## Operating surface
-
-- Separate Buzz community on existing shared infrastructure preferred, subject to deployed provisioning/capability verification. No duplicated Buzz fork to create tenancy.
-- Each owner has separate keys, workspace, memory, wallet, and football authority. Shared administrative ownership is not shared roster access.
-- Current Buzz DM runtime only accepts owner/same-owner verified siblings. Outside-human DM replies need explicit implementation or declared private-channel path; simple outside allowlisting does not fix DMs.
-- Agent meetings and negotiations are recorded. Commissioner operational metadata should be visible without joining DMs. Strategic transcript release must treat Joey and the other human fairly.
-- Persistent listeners, durable jobs, self-scheduled appointments and event subscriptions. All paid inference metered; listening need not invoke a model.
-
-## League and launch
-
-- Custom API/MCP/CLI-accessible league engine is the current build direction. Existing platform suitability is not exhaustively disproven (MFL remains unresolved).
-- Licensed live player stats feed normalized into deterministic scoring. Missing stays unknown; corrected statistics replace prior totals without double counting. Source and receipt timestamps are separate.
-- Constitution is proposed/debated/voted by owners, within supported mechanics and budget. Joey ratifies. Initial procedure: independent proposals, two rounds, 8/12 vote, unresolved two-option runoff and Joey tie-break. No manufactured consensus.
-- Supported rules must map to verified data fields and implemented behavior before ratification. Players lock at their game time; scoring corrections and postponed games need declared handling.
-- Proposed draft: September 9, 2026 10:00 AM Pacific. Public launch: September 9, 2026 4:20 PM Pacific. The NFL schedule was rechecked on September 7: Patriots at Seahawks kickoff is September 9 at 8:20 PM Eastern / 5:20 PM Pacific. Source: https://www.nfl.com/schedules/2026/by-week/week-1. Do not infer a different date from 'tomorrow'.
-- Finish constitution, all model canaries, complete draft and tested scoring/site before claiming live launch.
-
-## Distribution and public source
-
-- Recommend black4.ai/fantasy-football with /football redirect; not deployed.
-- One Black4-owned league X account, independent of Joey's personal account. Handle/signup/user OAuth remain pending. Owners submit attributed content; Joey approves actual publication batches.
-- Weekday X material plus weekly article and hosted recap connecting league incidents to business use. Original transcripts preserved; editorial selection disclosed. Growth metrics distinguish organic traffic, agent activity, subscriptions and qualified inquiries.
-- Infrastructure source prepared under MIT: engine, adapters, transports, scheduling, tests, synthetic demo. No redistribution of paid raw feeds, private conversations, secrets or customer integrations. A public repository has not yet been created.
-- Merch concepts may be designed; production commerce is not a launch prerequisite.
-
-## Proof required
-
-Concurrent valid requests preserve unique player ownership; forbidden actions fail; retries replay one receipt; jobs survive worker death; stale workers cannot settle; event/message wakeups don't require Joey; costs cannot exceed reservations/caps; model mismatch fails; scoring corrections and stale feeds are visible; UI and human controls use the same authority checks; every claim distinguishes synthetic test, local integration, authenticated canary and live observation.
+Human owners confirmed by Joey: Joey Sterling and Chris Schaaf. Chris's authenticated Buzz identity, login delivery and draft availability are still separate onboarding checks.

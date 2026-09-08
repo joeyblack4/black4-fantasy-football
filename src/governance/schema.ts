@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { leagueRulesSchema } from "../league/schema.js";
+import { leagueCapabilityVersion } from "../league/capabilities.js";
 import { ScoringRulesSchema } from "../data/index.js";
 const id = z
   .string()
@@ -28,6 +29,9 @@ export const governanceCommandSchema = z.discriminatedUnion("type", [
       rationale: z.string().min(1).max(8000),
       rules: leagueRulesSchema,
       scoringRules: ScoringRulesSchema,
+      capabilityVersion: z
+        .literal(leagueCapabilityVersion)
+        .default(leagueCapabilityVersion),
       teamOrder: z
         .array(id)
         .length(12)

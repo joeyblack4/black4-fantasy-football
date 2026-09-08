@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { leagueCapabilityVersion } from "../league/capabilities.js";
 import { ScoringRulesSchema } from "../data/index.js";
 import type { Tx } from "../db.js";
 import {
@@ -56,6 +57,11 @@ export async function quorum(
     "QUORUM_NOT_MET",
     "At least eight of twelve verified owners must approve this proposal",
   );
+  guard(
+    proposal.capability_version === leagueCapabilityVersion,
+    "CAPABILITY_VERSION_MISMATCH",
+    "Proposal must explicitly use the current implemented capability menu",
+  );
   const rules = leagueRulesSchema.parse(proposal.rules);
   guard(
     proposal.scoring_rules,
@@ -79,6 +85,7 @@ export async function quorum(
       rationale: proposal.rationale,
       rules,
       scoringRules,
+      capabilityVersion: proposal.capability_version,
       teamOrder: proposal.team_order,
       version: proposal.version,
     }) === proposal.content_hash,

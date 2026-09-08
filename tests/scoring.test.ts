@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   ScoreboardService,
   roundRobin,
+  regularSeasonSchedule,
   type ScoreboardConfiguration,
 } from "../src/scoring/index.js";
 import { StatsService, halfPprRules } from "../src/data/index.js";
@@ -24,6 +25,23 @@ describe("round robin", () => {
     }
     expect(new Set(pairs).size).toBe(66);
     expect(() => roundRobin(["a", "a"])).toThrow();
+  });
+  it("extends a fourteen-week schedule deterministically with reversed rematches", () => {
+    const teams = Array.from({ length: 12 }, (_, i) => "team-" + i),
+      weeks = regularSeasonSchedule(teams, 14);
+    expect(weeks).toHaveLength(14);
+    for (const week of weeks)
+      expect(
+        new Set(week.matchups.flatMap((m) => [m.homeTeamId, m.awayTeamId]))
+          .size,
+      ).toBe(12);
+    expect(weeks[11].matchups).toEqual(
+      weeks[0].matchups.map((m) => ({
+        homeTeamId: m.awayTeamId,
+        awayTeamId: m.homeTeamId,
+      })),
+    );
+    expect(() => regularSeasonSchedule(teams, 18)).toThrow();
   });
 });
 describe("league scoreboard with synthetic stats", () => {
@@ -186,6 +204,14 @@ describe("league scoreboard with synthetic stats", () => {
       revised.matchups.find((m) => m.homeTeamId === "team-0")!.winnerTeamId,
     ).toBe("team-11");
   });
+  it("exposes all ratified regular-season weeks and their configuration status", async () => {
+    const schedule = await scoreboard.schedule(actor.leagueId);
+    expect(schedule.algorithm).toBe("circle-repeat-v1");
+    expect(schedule.weeks).toHaveLength(14);
+    expect(schedule.weeks[0].configurationStatus).toBe("configured");
+    expect(schedule.weeks[1].configurationStatus).toBe("missing");
+    expect(schedule.postseason).toBe("not-implemented");
+  });
   it("does not finalize a matchup with partial, stale, or unknown data", async () => {
     await stats.ingest({
       ...syntheticReceiver,
@@ -248,6 +274,9 @@ describe("league scoreboard with synthetic stats", () => {
     const week2 = {
       ...config,
       week: 2,
+      matchups: roundRobin(
+        Array.from({ length: 12 }, (_, i) => `team-${i}`),
+      )[1]!,
       playerGames: [
         { playerId: "SYNTHETIC-WR-23", gameId: "SYNTHETIC-WEEK-2" },
       ],

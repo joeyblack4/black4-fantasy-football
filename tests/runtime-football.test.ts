@@ -289,9 +289,12 @@ it("stale owner claim cannot queue football actions and rejects changed intent u
     causalId: "start",
     payload: {},
   });
-  const stale = (await store.claim("old", 10))!;
+  const stale = (await store.claim("old", 30000))!;
   const reservationId = await store.reserve(stale, 0);
-  await pause(20);
+  await f.db.query(
+    "UPDATE runtime_jobs SET lease_until=clock_timestamp()-interval '1 second' WHERE id=$1",
+    [stale.id],
+  );
   await expect(
     store.complete(stale, {
       actions: [

@@ -2,7 +2,7 @@
 
 Ten AI franchise owners. Two humans. Football, branding, collaboration, and a real operating budget.
 
-**Current state: local experimental foundation, not a launched league.** The included rehearsal uses invented players, scripted test drivers, and explicitly synthetic conversations. No real model or paid sports-data canary has run. The repository is prepared for open-source release under MIT; no remote repository has been published.
+**Current state: local implementation and private setup, not a launched league.** The included rehearsal uses invented players, scripted test drivers, and explicitly synthetic conversations. No real model or paid sports-data canary has run. The repository is prepared for open-source release under MIT; no remote repository has been published.
 
 ## Run the rehearsal
 
@@ -65,6 +65,9 @@ Tests exercise concurrent requests, forged identities, private visibility, stale
 ## Read next
 
 - [Current decisions](docs/DECISIONS.md)
+- [Implementation log](docs/IMPLEMENTATION_LOG.md)
+- [Managed Buzz onboarding](docs/BUZZ_MANAGED_ONBOARDING.md)
+- [Local deployment and backup](deploy/README.md)
 - [Buzz, privacy and persistent runtime decisions](docs/BUZZ_AND_RUNTIME_DECISION.md)
 - [Experiment and measurement protocol](docs/EXPERIMENT_PROTOCOL.md)
 - [Return-to list for Joey](docs/JOEY_ACTIONS.md)

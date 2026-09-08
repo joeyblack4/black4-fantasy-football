@@ -1,0 +1,91 @@
+name: black4-football
+x-app: &app
+  build:
+    context: .
+    dockerfile: deploy/Dockerfile
+  image: black4-football:local
+  init: true
+  user: "${FOOTBALL_CONTAINER_UID:-1000}:${FOOTBALL_CONTAINER_GID:-1000}"
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:size=128m,mode=1777
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_grace_period: 210s
+  depends_on:
+    postgres:
+      condition: service_healthy
+  networks: [league]
+  secrets: [database_url]
+services:
+  postgres:
+    image: postgres:16-bookworm@sha256:bb3e1a57e5407e0a5280b4211980a5e537f4abd234a87014ac979849a78dd825
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: black4
+      POSTGRES_DB: black4_football
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - league_postgres:/var/lib/postgresql/data
+    networks: [league]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U black4 -d black4_football]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 60s
+  api:
+    <<: *app
+    command: [api]
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+      HOST: 0.0.0.0
+      PORT: 4312
+    ports:
+      - 127.0.0.1:${FOOTBALL_HOST_PORT:-4313}:4312
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:4312/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+  clock:
+    <<: *app
+    profiles: [league]
+    command: [clock]
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+      FOOTBALL_LEAGUE_ID: ${FOOTBALL_LEAGUE_ID:-}
+  worker:
+    <<: *app
+    profiles: [live]
+    command: [worker]
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+      FOOTBALL_MANIFEST_ID: ${FOOTBALL_MANIFEST_ID:-}
+      FOOTBALL_TARIFF_FILE: /run/secrets/model_tariff
+      FOOTBALL_TURN_RESERVATION_MICROS: ${FOOTBALL_TURN_RESERVATION_MICROS:-}
+      FOOTBALL_MAX_OUTPUT_TOKENS: ${FOOTBALL_MAX_OUTPUT_TOKENS:-4000}
+      FOOTBALL_KEY_NAME: ${FOOTBALL_KEY_NAME:-}
+      FOOTBALL_KEY_FILE: /run/secrets/model_key
+    secrets: [database_url, model_key, model_tariff]
+secrets:
+  postgres_password:
+    file: ${FOOTBALL_DEPLOY_DIR:-./.local/deploy}/postgres-password
+  database_url:
+    file: ${FOOTBALL_DEPLOY_DIR:-./.local/deploy}/database-url.container
+  model_key:
+    file: ${FOOTBALL_DEPLOY_DIR:-./.local/deploy}/model-key
+  model_tariff:
+    file: ${FOOTBALL_DEPLOY_DIR:-./.local/deploy}/model-tariff.json
+networks:
+  league: {}
+volumes:
+  league_postgres: {}

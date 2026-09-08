@@ -1,0 +1,9 @@
+{
+  "leagueId": "black4-fantasy-2026",
+  "communityUrl": "wss://black4fantasysports.communities.buzz.xyz",
+  "pubkey": "replace-with-verified-64-character-hex-pubkey",
+  "executable": "/absolute/path/to/buzz-executable",
+  "keyEnvironmentVariable": "B4_LEAGUE_BUZZ_LISTENER_KEY",
+  "authTagEnvironmentVariable": "B4_LEAGUE_BUZZ_AUTH_TAG",
+  "pollIntervalMs": 5000
+}

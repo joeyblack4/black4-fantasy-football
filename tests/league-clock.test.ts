@@ -138,7 +138,7 @@ describe("trusted league clock — synthetic server deadlines", () => {
             "SELECT idempotency_key FROM league_command_receipts WHERE actor_id='clock-worker' ORDER BY idempotency_key",
           )
         ).rows.map((r) => r.idempotency_key),
-      ).toEqual(["clock:draft:0", "clock:draft:1"]);
+      ).toEqual(["clock:draft:0:0", "clock:draft:1:0"]);
     } finally {
       await f.close();
     }
@@ -156,19 +156,37 @@ describe("trusted league clock — synthetic server deadlines", () => {
       });
       expect(tick.needsAttention).toBe(true);
       expect(tick.work).toMatchObject([
-        { status: "blocked", code: "QUEUE_EXHAUSTED" },
+        {
+          status: "paused",
+          receipt: { result: { status: "paused", automatic: true } },
+        },
       ]);
       expect(
-        (await f.clock.tick(f.system, { leagueId: f.leagueId })).work[0].code,
-      ).toBe("QUEUE_EXHAUSTED");
+        (await f.clock.tick(f.system, { leagueId: f.leagueId })).work,
+      ).toEqual([]);
+      expect(
+        (await f.service.snapshot(f.leagueId)).league.draft_paused_at,
+      ).toBeInstanceOf(Date);
       expect((await f.service.snapshot(f.leagueId)).picks).toHaveLength(0);
       await f.execute(f.owners[0], {
         type: "setDraftQueue",
         playerIds: ["p7"],
       });
       expect(
+        (await f.clock.tick(f.system, { leagueId: f.leagueId })).work,
+      ).toEqual([]);
+      await f.execute(f.admin, {
+        type: "resumeDraft",
+        reason: "Owner supplied a replacement queue",
+      });
+      await f.db.query(
+        "UPDATE leagues SET pick_deadline=clock_timestamp() WHERE id=$1",
+        [f.leagueId],
+      );
+      expect(
         (await f.clock.tick(f.system, { leagueId: f.leagueId })).work[0].status,
       ).toBe("applied");
+      expect((await f.service.snapshot(f.leagueId)).league.draft_epoch).toBe(1);
       expect((await f.service.snapshot(f.leagueId)).picks[0].player_id).toBe(
         "p7",
       );

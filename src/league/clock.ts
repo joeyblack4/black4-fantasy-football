@@ -11,7 +11,7 @@ const tickSchema = z
 export type LeagueClockWork = {
   kind: "draft" | "waivers";
   reference: string;
-  status: "applied" | "replayed" | "blocked" | "skipped";
+  status: "applied" | "replayed" | "paused" | "blocked" | "skipped";
   receipt?: CommandReceipt;
   code?: string;
   message?: string;
@@ -45,11 +45,11 @@ export class LeagueClock {
     const due = (
       await this.db.query(
         `
-   SELECT kind,reference,due_at FROM (
-    SELECT 'draft'::text AS kind,next_pick::text AS reference,pick_deadline AS due_at
-    FROM leagues WHERE id=$1 AND status='drafting' AND pick_deadline<=$2
+   SELECT kind,reference,epoch,due_at FROM (
+    SELECT 'draft'::text AS kind,next_pick::text AS reference,draft_epoch AS epoch,pick_deadline AS due_at
+    FROM leagues WHERE id=$1 AND status='drafting' AND draft_paused_at IS NULL AND pick_deadline<=$2
     UNION ALL
-    SELECT 'waivers'::text AS kind,w.id AS reference,w.closes_at AS due_at
+    SELECT 'waivers'::text AS kind,w.id AS reference,0 AS epoch,w.closes_at AS due_at
     FROM league_waiver_periods w JOIN leagues l ON l.id=w.league_id
     WHERE w.league_id=$1 AND l.status='active' AND w.status='open' AND w.closes_at<=$2
    ) due ORDER BY due_at,kind,reference LIMIT $3`,
@@ -62,18 +62,27 @@ export class LeagueClock {
         reference = String(item.reference);
       const command =
         kind === "draft"
-          ? { type: "autoDraftPick" as const, expectedPick: Number(reference) }
+          ? {
+              type: "autoDraftPick" as const,
+              expectedPick: Number(reference),
+              expectedDraftEpoch: Number(item.epoch),
+            }
           : { type: "resolveWaivers" as const, periodId: reference };
       try {
         const receipt = await this.service.execute(actor, {
           ...command,
           leagueId: config.leagueId,
-          idempotencyKey: `clock:${kind}:${reference}`,
+          idempotencyKey: `clock:${kind}:${reference}${kind === "draft" ? ":" + item.epoch : ""}`,
         });
         work.push({
           kind,
           reference,
-          status: receipt.replayed ? "replayed" : "applied",
+          status:
+            receipt.result.status === "paused"
+              ? "paused"
+              : receipt.replayed
+                ? "replayed"
+                : "applied",
           receipt,
         });
       } catch (error) {
@@ -96,7 +105,9 @@ export class LeagueClock {
       checkedAt: new Date(checkedAt).toISOString(),
       considered: due.length,
       work,
-      needsAttention: work.some((w) => w.status === "blocked"),
+      needsAttention: work.some(
+        (w) => w.status === "blocked" || w.status === "paused",
+      ),
     };
   }
 }

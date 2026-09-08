@@ -159,11 +159,12 @@ export class GovernanceService {
             rationale: command.rationale,
             rules: command.rules,
             scoringRules: command.scoringRules,
+            capabilityVersion: command.capabilityVersion,
             teamOrder: command.teamOrder,
             version: command.version,
           });
           await tx.query(
-            "INSERT INTO governance_proposals(league_id,id,meeting_id,author_team_id,author_id,version,title,rationale,rules,team_order,content_hash,scoring_rules) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+            "INSERT INTO governance_proposals(league_id,id,meeting_id,author_team_id,author_id,version,title,rationale,rules,team_order,content_hash,scoring_rules,capability_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
             [
               actor.leagueId,
               command.proposalId,
@@ -177,6 +178,7 @@ export class GovernanceService {
               command.teamOrder,
               contentHash,
               JSON.stringify(command.scoringRules),
+              command.capabilityVersion,
             ],
           );
           result = {

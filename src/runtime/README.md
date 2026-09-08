@@ -56,3 +56,11 @@ The integration tests drive a fully synthetic propose → counterparty wake → 
 Every live supervisor must supply `allowedAgentIds` to both `runOne` and `FootballOutbox.dispatchOne`. Matching a model ID alone is insufficient to bind a worker to a league. An empty scope claims no work. Omitted scope is useful for isolated synthetic fixtures and commissioner-operated local development only.
 
 Outbox retries preserve the same engine command key. Five failed attempts deadletter the action. Ordinary league validation failures are terminal and wake the owner with the failure, so a new decision can fix the problem. A failed action never produces a success receipt. The pending outbox is limited to 100 commands per owner.
+
+## Priorities and same-model staff
+
+Migration `013_runtime_franchise.sql` persists urgent, normal and background queue priorities. Trusted source/deadline adapters may enqueue urgent events. Owner-created appointments can request only normal or background priority; a peer writing “urgent” in a message does not promote that message. Claims select the highest-priority due work, then oldest due work, while retaining per-franchise turn serialization and fencing. Priority does not interrupt an already-running model call; urgent response latency remains bounded by the current turn and provider timeout until a coordinated preemption policy is implemented.
+
+A `delegate` action supplies only causal ID, staff role and task. It cannot choose a model, credentials, alternate franchise or separate budget. Staff jobs use the same franchise model and wallet, default to background priority, and have durable parent relationships. At most four staff jobs may be pending/running per owner and four may originate from a parent turn. Staff cannot recursively delegate or mutate football, public drafts, services or peers. They report in their result summary and may store namespaced notes; a successful or terminally failed staff job wakes its owner to make the next decision. `StaffDecisionSchema` gives real provider adapters the corresponding report-only structured output contract.
+
+These staff jobs are bounded delegated turns within a franchise, not separately credentialed workers or parallel reasoning identities. They preserve the one-live-leased-turn-per-franchise rule. They have not yet been validated with paid model calls.

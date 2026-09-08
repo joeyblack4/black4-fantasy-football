@@ -1,3 +1,16 @@
+import { FranchiseExpenses, ExpenseError } from "./franchise/expenses.js";
+import { XPublisher, XPublicationError } from "./publication/x-publisher.js";
+import {
+  PublicProjection,
+  publicScope,
+  publicScopeHash,
+} from "./publication/projection.js";
+import {
+  FranchiseService,
+  FranchiseActionSchema,
+  FranchiseError,
+} from "./franchise/index.js";
+import { BuzzArchiveService, BuzzArchiveQuerySchema } from "./buzz/archive.js";
 import {
   createServer,
   type IncomingMessage,
@@ -57,7 +70,10 @@ export function createApiServer(db: Db) {
     runtime = new RuntimeStore(db),
     governance = new GovernanceService(db),
     scoreboard = new ScoreboardService(db),
-    dispatcher = new DataDispatcher(db);
+    dispatcher = new DataDispatcher(db),
+    franchises = new FranchiseService(db),
+    expenses = new FranchiseExpenses(db),
+    buzzArchive = new BuzzArchiveService(db);
   async function binding(actor: Principal, agentId: string, ownerOnly = false) {
     const row = (
       await db.query(
@@ -106,6 +122,8 @@ export function createApiServer(db: Db) {
         "/style.css": "style.css",
         "/play": "play.html",
         "/play.js": "play.js",
+        "/review": "review.html",
+        "/review.js": "review.js",
       };
       if (req.method === "GET" && staticFiles[url.pathname]) {
         const path = staticFiles[url.pathname];
@@ -151,10 +169,164 @@ export function createApiServer(db: Db) {
           peerBindings,
         });
       }
+      if (req.method === "GET" && url.pathname === "/v1/publication/scope") {
+        requireCommissioner(actor);
+        return reply(res, 200, {
+          scope: publicScope,
+          scopeHash: publicScopeHash,
+        });
+      }
+      if (req.method === "POST" && url.pathname === "/v1/publication/release") {
+        const input = z
+          .object({
+            scopeHash: z.string(),
+            mode: z.enum(["live", "rehearsal"]),
+          })
+          .strict()
+          .parse(await body(req));
+        requireCommissioner(actor);
+        await new PublicProjection(db).enable(actor, input);
+        return reply(res, 200, { enabled: true, scopeHash: input.scopeHash });
+      }
+      if (req.method === "GET" && url.pathname === "/v1/expenses")
+        return reply(res, 200, await expenses.snapshot(actor));
+      const expenseAction = url.pathname.match(
+        /^\/v1\/expenses\/(begin|settle|uncertain|cancel)$/,
+      );
+      if (req.method === "POST" && expenseAction) {
+        requireCommissioner(actor);
+        const input = await body(req);
+        const result =
+          expenseAction[1] === "begin"
+            ? await expenses.beginExpense(actor, input)
+            : expenseAction[1] === "settle"
+              ? await expenses.settleExpense(actor, input)
+              : expenseAction[1] === "uncertain"
+                ? await expenses.markUncertain(actor, input)
+                : await expenses.cancelExpense(actor, input);
+        return reply(res, 200, result);
+      }
+      if (url.pathname === "/v1/publication/x" && req.method === "GET") {
+        requireCommissioner(actor);
+        return reply(
+          res,
+          200,
+          await new XPublisher(db, { leagueId: actor.leagueId }).snapshot(
+            actor,
+          ),
+        );
+      }
+      if (
+        url.pathname === "/v1/publication/x/enqueue" &&
+        req.method === "POST"
+      ) {
+        requireCommissioner(actor);
+        // Scheduling has no credentials or network path. Only the separately enabled worker publishes.
+        return reply(
+          res,
+          200,
+          await new XPublisher(db, { leagueId: actor.leagueId }).enqueue(
+            actor,
+            await body(req),
+          ),
+        );
+      }
+      if (url.pathname === "/v1/publication/revoke" && req.method === "POST") {
+        requireCommissioner(actor);
+        const input = z
+          .object({ batchId: z.uuid() })
+          .strict()
+          .parse(await body(req));
+        return reply(
+          res,
+          200,
+          await franchises.revokeBatch(actor, input.batchId),
+        );
+      }
+      if (req.method === "GET" && url.pathname === "/v1/franchise")
+        return reply(res, 200, await franchises.snapshot(actor));
+      if (req.method === "POST" && url.pathname === "/v1/franchise/actions") {
+        const input = z
+          .object({
+            agentId: z.string().min(1),
+            idempotencyKey: z.string().min(1),
+            action: FranchiseActionSchema,
+          })
+          .strict()
+          .parse(await body(req));
+        await binding(actor, input.agentId, true);
+        if (input.action.type === "governance")
+          throw new ApiError(
+            400,
+            "USE_GOVERNANCE_ROUTE",
+            "Submit human governance through the governance route.",
+          );
+        return reply(
+          res,
+          200,
+          await franchises.execute(actor, { ...input, action: input.action }),
+        );
+      }
+      if (req.method === "POST" && url.pathname === "/v1/publication/prepare")
+        return reply(
+          res,
+          200,
+          await franchises.prepareBatch(actor, await body(req)),
+        );
+      if (req.method === "POST" && url.pathname === "/v1/publication/approve")
+        return reply(
+          res,
+          200,
+          await franchises.approveBatch(actor, await body(req)),
+        );
+      if (req.method === "POST" && url.pathname === "/v1/services/review")
+        return reply(
+          res,
+          200,
+          await franchises.reviewService(actor, await body(req)),
+        );
+      if (req.method === "GET" && url.pathname === "/v1/buzz/archive") {
+        const input = BuzzArchiveQuerySchema.parse({
+          leagueId: actor.leagueId,
+          channelId: url.searchParams.get("channelId"),
+          afterSequence: url.searchParams.get("afterSequence") ?? "0",
+          limit: Number(url.searchParams.get("limit") ?? 100),
+        });
+        return reply(res, 200, await buzzArchive.query(actor, input));
+      }
+      if (req.method === "GET" && url.pathname === "/v1/providers") {
+        requireCommissioner(actor);
+        const manifests = (
+          await db.query(
+            "SELECT id,agent_id,version,status,document,activated_at FROM provider_manifests WHERE league_id=$1 ORDER BY agent_id,version",
+            [actor.leagueId],
+          )
+        ).rows;
+        const calls = (
+          await db.query(
+            "SELECT c.* FROM provider_calls c JOIN provider_manifests m ON m.id=c.manifest_id WHERE m.league_id=$1 ORDER BY c.started_at DESC LIMIT 200",
+            [actor.leagueId],
+          )
+        ).rows;
+        return reply(res, 200, { manifests, calls });
+      }
       if (req.method === "POST" && url.pathname === "/v1/governance/commands") {
         const command = governanceCommandSchema.parse(await body(req));
         requireLeague(actor, command.leagueId);
         return reply(res, 200, await governance.execute(actor, command));
+      }
+      if (req.method === "GET" && url.pathname === "/v1/governance/meetings") {
+        const rows = (
+          await db.query(
+            "SELECT id FROM governance_meetings WHERE league_id=$1 ORDER BY vote_deadline DESC LIMIT 20",
+            [actor.leagueId],
+          )
+        ).rows;
+        return reply(res, 200, {
+          meetings: await Promise.all(
+            rows.map((r) => governance.snapshot(actor, r.id)),
+          ),
+        });
       }
       const meetingPath = url.pathname.match(
         /^\/v1\/governance\/meetings\/([^/]+)$/,
@@ -259,7 +431,14 @@ export function createApiServer(db: Db) {
         };
         return reply(res, 200, {
           mode: "local-foundation",
-          liveModelCanaries: 0,
+          liveModelCanaries: Number(
+            (
+              await db.query(
+                `SELECT count(DISTINCT c.agent_id) AS n FROM provider_calls c JOIN provider_manifests m ON m.id=c.manifest_id WHERE m.league_id=$1 AND c.purpose='canary' AND c.status='verified' AND c.reconciliation_status='verified'`,
+                [actor.leagueId],
+              )
+            ).rows[0].n,
+          ),
           league: await league.snapshot(actor.leagueId, actor),
           runtime: value,
         });
@@ -280,10 +459,20 @@ export function createApiServer(db: Db) {
           message: error.message,
         });
       const code = (error as any)?.code;
-      if (error instanceof LeagueError || error instanceof RuntimeError)
+      if (
+        error instanceof LeagueError ||
+        error instanceof RuntimeError ||
+        error instanceof FranchiseError ||
+        error instanceof ExpenseError ||
+        error instanceof XPublicationError
+      )
         return reply(
           res,
-          code === "FORBIDDEN" ? 403 : code === "NOT_FOUND" ? 404 : 409,
+          String(code).includes("FORBIDDEN")
+            ? 403
+            : code === "NOT_FOUND"
+              ? 404
+              : 409,
           { error: code, message: error.message },
         );
       // Never echo SQL, credential material, or provider response bodies to a caller.
