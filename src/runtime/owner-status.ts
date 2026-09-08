@@ -104,6 +104,14 @@ export async function buildOwnerRuntimeStatus(
           [row.league_id],
         )
       ).rows[0] ?? null;
+    const qualification = stage
+      ? (
+          await tx.query(
+            "SELECT receipt_id,reviewed_at,evidence->'researchBaseline' AS baseline FROM runtime_owner_stage_reviews WHERE league_id=$1 AND stage_id=$2 AND agent_id=$3",
+            [row.league_id, stage.id, job.agentId],
+          )
+        ).rows[0]
+      : null;
     const patch = config.patchReceiptId
       ? (
           await tx.query(
@@ -165,6 +173,25 @@ export async function buildOwnerRuntimeStatus(
       },
       runtime: {
         stage,
+        reviewedResearchBaseline: qualification
+          ? {
+              reviewReceiptId: qualification.receipt_id,
+              reviewedAt: qualification.reviewed_at,
+              status: qualification.baseline?.status ?? "unknown",
+              search: {
+                receiptId: qualification.baseline?.search?.receiptId ?? null,
+                completedAt:
+                  qualification.baseline?.search?.completedAt ?? null,
+                provider: qualification.baseline?.search?.source ?? null,
+              },
+              page: {
+                receiptId: qualification.baseline?.page?.id ?? null,
+                completedAt: qualification.baseline?.page?.completed_at ?? null,
+                url: qualification.baseline?.page?.url ?? null,
+              },
+              note: "Historical verified access for this franchise, retained after onboarding closes. Earlier capability-needs notes may predate these receipts. This is not a new retrieval or a guarantee of current source availability; use current tools and receipts for decisions.",
+            }
+          : null,
         configured: {
           maxOutputTokens: config.maxOutputTokens,
           maxCallsPerTurn: config.maxCallsPerTurn,

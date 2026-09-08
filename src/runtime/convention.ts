@@ -27,6 +27,268 @@ export const StartConventionSchema = z
     synthetic: z.boolean().default(false),
   })
   .strict();
+const readId = z
+  .string()
+  .min(1)
+  .max(120)
+  .regex(/^[A-Za-z0-9_.:-]+$/);
+export const GovernanceReadSchema = z.discriminatedUnion("view", [
+  z
+    .object({
+      view: z.literal("summary"),
+      offset: z.number().int().min(0).max(1000).default(0),
+      limit: z.number().int().min(1).max(12).default(10),
+    })
+    .strict(),
+  z
+    .object({
+      view: z.literal("proposal"),
+      proposalId: readId,
+      section: z
+        .enum(["all", "content", "rationale", "leaguePolicies"])
+        .default("all"),
+      offset: z.number().int().min(0).max(1000000).default(0),
+    })
+    .strict(),
+  z
+    .object({
+      view: z.literal("menu"),
+      questionId: readId.optional(),
+      optionId: readId.optional(),
+      section: z.enum(["all", "content"]).default("all"),
+      offset: z.number().int().min(0).max(1000000).default(0),
+    })
+    .strict(),
+]);
+const governanceReadInstruction =
+  "governance_state {} returns a compact summary. Follow nextOffset with view:summary to read every visible proposal. Choices and hashes are exact; rationale and leaguePolicies are omitted from summaries explicitly. Before endorsing or voting, retrieve the exact candidate with view:proposal and proposalId. If tooLarge, read section:rationale, section:leaguePolicies, or section:content, following nextOffset until hasMore=false. Section offsets count Unicode code points; content pages are exact JSON fragments, not summaries. Use view:menu for full native options, or questionId/optionId to narrow; section:content pages an oversized menu. Sealed peer proposals remain unavailable.";
+const encodedBytes = (value: unknown) =>
+  Buffer.byteLength(JSON.stringify(value));
+const projectionBudget = 20500;
+function textPage(value: string, offset: number) {
+  const points = Array.from(value);
+  if (offset > points.length) throw new RuntimeError("GOVERNANCE_OFFSET_AHEAD");
+  const end = Math.min(points.length, offset + 3500);
+  return {
+    text: points.slice(offset, end).join(""),
+    offset,
+    nextOffset: end,
+    totalCodePoints: points.length,
+    hasMore: end < points.length,
+    offsetUnit: "unicode-code-points",
+    truncated: false,
+    paginated: true,
+  };
+}
+/** Pure projection of an already-authorized snapshot; never reads hidden proposals. */
+export function projectGovernanceSnapshot(
+  snapshot: any,
+  request: z.infer<typeof GovernanceReadSchema>,
+) {
+  const identity = {
+    meetingId: snapshot.meeting.id,
+    phase: snapshot.phase,
+    host: snapshot.host,
+    hostVersion: snapshot.hostVersion,
+    menuHash: snapshot.menuHash,
+  };
+  const detail = (value: any, meta: any) =>
+    encodedBytes({ ...identity, ...meta, value }) <= projectionBudget
+      ? { ...identity, ...meta, status: "complete", value }
+      : {
+          ...identity,
+          ...meta,
+          status: "tooLarge",
+          contentReturned: false,
+          instruction:
+            "Use section:content for exact bounded JSON pages; proposal rationale and leaguePolicies also have direct section reads.",
+        };
+  if (request.view === "proposal") {
+    const proposal = snapshot.proposals.find(
+      (p: any) => p.id === request.proposalId,
+    );
+    if (!proposal)
+      return {
+        ...identity,
+        status: "not_visible",
+        proposalId: request.proposalId,
+        instruction:
+          "Unknown or sealed proposal in this meeting; no content disclosed.",
+      };
+    const meta = {
+      proposalId: proposal.id,
+      version: proposal.version,
+      contentHash: proposal.content_hash,
+      authorTeamId: proposal.author_team_id,
+      ballotEligible: proposal.ballot_eligible ?? true,
+      section: request.section,
+    };
+    if (request.section === "all") {
+      if (request.offset)
+        throw new RuntimeError("GOVERNANCE_SECTION_REQUIRED_FOR_OFFSET");
+      return detail(proposal, meta);
+    }
+    const content = proposal.content ?? proposal;
+    const value =
+      request.section === "content"
+        ? JSON.stringify(content)
+        : (content[request.section] ?? "");
+    return {
+      ...identity,
+      ...meta,
+      status: "section",
+      ...textPage(value, request.offset),
+    };
+  }
+  if (request.view === "menu") {
+    if (!snapshot.menu)
+      return {
+        ...identity,
+        status: "not_available",
+        instruction: "This host has no native menu.",
+      };
+    let value = snapshot.menu;
+    if (request.optionId && !request.questionId)
+      throw new RuntimeError("GOVERNANCE_QUESTION_REQUIRED");
+    if (request.questionId) {
+      value = snapshot.menu.questions.find(
+        (q: any) => q.id === request.questionId,
+      );
+      if (request.optionId)
+        value = value?.options.find((o: any) => o.id === request.optionId);
+      if (!value) return { ...identity, status: "not_available" };
+    }
+    const meta = {
+      menuId: snapshot.menu.menuId,
+      questionId: request.questionId,
+      optionId: request.optionId,
+      section: request.section,
+    };
+    if (request.section === "content")
+      return {
+        ...identity,
+        ...meta,
+        status: "section",
+        ...textPage(JSON.stringify(value), request.offset),
+      };
+    if (request.offset)
+      throw new RuntimeError("GOVERNANCE_SECTION_REQUIRED_FOR_OFFSET");
+    return detail(value, meta);
+  }
+  if (request.offset > snapshot.proposals.length)
+    throw new RuntimeError("GOVERNANCE_OFFSET_AHEAD");
+  const menu = snapshot.menu
+    ? {
+        menuId: snapshot.menu.menuId,
+        title: snapshot.menu.title,
+        questions: snapshot.menu.questions.map((q: any) => ({
+          id: q.id,
+          label: q.label,
+          options: q.options.map((o: any) => ({
+            id: o.id,
+            label: o.label,
+            contentCodePoints: Array.from(o.content).length,
+          })),
+        })),
+        applicationSections: snapshot.menu.applicationSections,
+        detailsOmitted: ["option.content", "option.evidenceRefs", "sourceNote"],
+        readDetails: { view: "menu" },
+      }
+    : undefined;
+  const result: any = {
+    ...identity,
+    meeting: snapshot.meeting,
+    members: snapshot.members,
+    phase: snapshot.phase,
+    threshold: snapshot.threshold,
+    electorate: snapshot.electorate,
+    menu,
+    configurationStatus: snapshot.configurationStatus,
+    approval: snapshot.approval
+      ? {
+          id: snapshot.approval.id,
+          proposal_id: snapshot.approval.proposal_id,
+          proposal_hash: snapshot.approval.proposal_hash,
+          version: snapshot.approval.version,
+        }
+      : null,
+    application: snapshot.application,
+    proposals: [],
+    votes: [],
+    votesScope: "returned_proposals_only",
+    projection: "summary",
+    totalVisibleProposals: snapshot.proposals.length,
+    offset: request.offset,
+    nextOffset: request.offset,
+    hasMore: request.offset < snapshot.proposals.length,
+    omittedProposalFields: [
+      "rationale",
+      "leaguePolicies",
+      "teamOrder",
+      "rules",
+      "scoringRules",
+    ],
+    detailReadRequiredBeforeVote: true,
+  };
+  if (encodedBytes(result) > projectionBudget)
+    result.menu = snapshot.menu
+      ? {
+          menuId: snapshot.menu.menuId,
+          status: "detail_required",
+          reason: "Menu labels exceed summary budget",
+          readDetails: { view: "menu", section: "content" },
+        }
+      : undefined;
+  for (const proposal of snapshot.proposals.slice(
+    request.offset,
+    request.offset + request.limit,
+  )) {
+    const content = proposal.content ?? proposal;
+    const p = {
+      id: proposal.id,
+      author_team_id: proposal.author_team_id,
+      version: proposal.version,
+      content_hash: proposal.content_hash,
+      ballot_eligible: proposal.ballot_eligible ?? true,
+      title: proposal.title,
+      choices: content.selections,
+      revision_no: proposal.revision_no,
+      replaces_proposal_id: proposal.replaces_proposal_id,
+      rationaleCodePoints: Array.from(content.rationale ?? "").length,
+      leaguePoliciesCodePoints: Array.from(content.leaguePolicies ?? "").length,
+    };
+    const votes = snapshot.votes
+      .filter((v: any) => v.proposal_id === proposal.id)
+      .map((v: any) => ({
+        proposal_id: v.proposal_id,
+        team_id: v.team_id,
+        choice: v.choice,
+      }));
+    if (
+      encodedBytes({
+        ...result,
+        proposals: [...result.proposals, p],
+        votes: [...result.votes, ...votes],
+      }) > projectionBudget
+    )
+      break;
+    result.proposals.push(p);
+    result.votes.push(...votes);
+    result.nextOffset++;
+  }
+  result.hasMore = result.nextOffset < snapshot.proposals.length;
+  if (result.hasMore && result.nextOffset === request.offset)
+    return {
+      ...identity,
+      status: "tooLarge",
+      instruction:
+        "This proposal summary exceeds the response budget. Use view:proposal with nextProposalId and section:content.",
+      nextProposalId: snapshot.proposals[request.offset].id,
+      nextOffset: request.offset + 1,
+      hasMore: request.offset + 1 < snapshot.proposals.length,
+    };
+  return result;
+}
 function check(value: unknown, code: string): asserts value {
   if (!value) throw new RuntimeError(code);
 }
@@ -40,7 +302,7 @@ function phase(row: any, now: Date): "proposals" | "voting" | "closed" {
 function phaseInstruction(stage: string) {
   const task =
     stage === "proposals"
-      ? "Read governance_state and make one native mfl_read request with type=rules for the currently bound league before proposing; read your own roster only if needed. Cite the actual read receipt and any configuration gap in your proposal rationale. Preserve your existing owner-chosen brand and durable operating memory from onboarding; focus this assignment on league rules rather than repeating naming or introductions. Before discussionOpensAt, do not share rule choices in Buzz."
+      ? "Read governance_state with view=menu for the full supported native option text before proposing; the default summary has labels only. Also make one native mfl_read request with type=rules for the currently bound league; read your own roster only if needed. Cite the actual read receipt and any configuration gap in your proposal rationale. Preserve your existing owner-chosen brand and durable operating memory from onboarding; focus this assignment on league rules rather than repeating naming or introductions. Before discussionOpensAt, do not share rule choices in Buzz."
       : stage === "discussion" || stage === "consolidation"
         ? "Read governance_state peer proposals and buzz_read. Post your actual choices and rationale; negotiate one consolidated candidate. Before cutoff, revise your own proposal with a fresh ID/version and replacesProposalId; never edit or invent another owner's work."
         : stage === "closed"
@@ -48,6 +310,8 @@ function phaseInstruction(stage: string) {
           : "Read final candidates and actual votes. Cast only your own ballot on the exact agreed candidate via governance. Chat is not a vote; recorded votes are immutable.";
   return (
     task +
+    " " +
+    governanceReadInstruction +
     " Goals: win the league and learn useful human/agent collaboration. Rewards are nonmonetary; in-season compute budgets stay unchanged. Human last-place consequences require individual opt-in; absent Chris has no proxy vote. Defer large SVG/content production until rules finish. Old Buzz tool-unavailable posts are historical; current trusted context and your own fresh tool receipts govern availability. Shared search credits are a paid internal allocation, not free resources. Database receipt completion times are authoritative over model-authored timestamps. Stay within meeting turns/spend."
   );
 }
@@ -373,7 +637,10 @@ export class ConventionRuntime {
       return work;
     });
   }
-  async context(agentId: string) {
+  async context(
+    agentId: string,
+    request = GovernanceReadSchema.parse({ view: "summary" }),
+  ) {
     const b = (
       await this.db.query(
         "SELECT b.*,t.owner_id FROM runtime_bindings b JOIN league_teams t ON t.league_id=b.league_id AND t.id=b.team_id WHERE b.agent_id=$1",
@@ -394,14 +661,17 @@ export class ConventionRuntime {
       phase: phase(row, row.now),
       limits: row.limits,
       usage: await consumption(this.db, row.league_id, row.meeting_id, agentId),
-      governance: await this.governance.snapshot(
-        {
-          id: b.owner_id,
-          role: "owner",
-          leagueId: b.league_id,
-          teamId: b.team_id,
-        },
-        row.meeting_id,
+      governance: projectGovernanceSnapshot(
+        await this.governance.snapshot(
+          {
+            id: b.owner_id,
+            role: "owner",
+            leagueId: b.league_id,
+            teamId: b.team_id,
+          },
+          row.meeting_id,
+        ),
+        request,
       ),
       instruction: phaseInstruction(
         phase(row, row.now) === "proposals" &&
@@ -435,17 +705,31 @@ export function createGovernanceReadTools(
   return [
     {
       name: "governance_state",
-      description:
-        "Read your authenticated meeting, visible proposals, actual votes and enforced convention turn/spend allowance. Initial proposals remain private until the meeting discussion boundary.",
+      description: governanceReadInstruction,
       parameters: {
         type: "object",
-        properties: {},
+        properties: {
+          view: { type: "string", enum: ["summary", "proposal", "menu"] },
+          proposalId: { type: "string" },
+          questionId: { type: "string" },
+          optionId: { type: "string" },
+          section: {
+            type: "string",
+            enum: ["all", "content", "rationale", "leaguePolicies"],
+          },
+          offset: { type: "integer", minimum: 0 },
+          limit: { type: "integer", minimum: 1, maximum: 12 },
+        },
         additionalProperties: false,
       },
       execute: async (job, input) => {
-        z.object({}).strict().parse(input);
+        const object = z.record(z.string(), z.unknown()).parse(input);
+        const request = GovernanceReadSchema.parse({
+          view: "summary",
+          ...object,
+        });
         await scope(job);
-        const result = await convention.context(job.agentId);
+        const result = await convention.context(job.agentId, request);
         await scope(job);
         return result;
       },

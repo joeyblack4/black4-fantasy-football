@@ -4,6 +4,7 @@ import { RuntimeStore } from "../src/runtime/index.js";
 import {
   RehearsalRuntime,
   RehearsalArmSchema,
+  persistedReviewSnapshotHash,
   assertRehearsalBudget,
   tagRehearsalWake,
 } from "../src/runtime/rehearsal.js";
@@ -563,6 +564,8 @@ it("requires the full current owner set and a matching live onboarding closure b
     const evidence = {
         brand: { receiptId: brand.receiptId },
         fixtureOnly: true,
+        observedAt: new Date("2026-09-08T06:00:00.000Z"),
+        nested: [{ completedAt: new Date("2026-09-08T06:01:00.000Z") }],
       },
       evidenceHash = fingerprint(evidence),
       reviewReceiptId = randomUUID();
@@ -609,6 +612,126 @@ it("requires the full current owner set and a matching live onboarding closure b
     "UPDATE runtime_owner_stage_reviews SET evidence_hash=$1 WHERE agent_id='agent0'",
     [ownerReviews[0]!.evidenceHash],
   );
+  const before = (
+    await f.db.query(
+      "SELECT * FROM runtime_owner_stage_reviews ORDER BY agent_id",
+    )
+  ).rows;
+  expect(
+    before.every(
+      (r) => r.evidence_hash !== persistedReviewSnapshotHash(r.evidence),
+    ),
+  ).toBe(true);
+  const attestationRequest = {
+    stageId,
+    closureReceiptId: closure.receiptId,
+    idempotencyKey: "synthetic-review-date-roundtrip",
+    expectedReviews: before.map((r) => ({
+      agentId: r.agent_id,
+      reviewReceiptId: r.receipt_id,
+      legacyEvidenceHash: r.evidence_hash,
+      persistedSnapshotHash: persistedReviewSnapshotHash(r.evidence),
+    })),
+    reason:
+      "SYNTHETIC explicit review of preserved persisted snapshot timestamps",
+    evidenceRef: "synthetic:review-date-diagnosis",
+  };
+  await expect(service.arm(actor, liveConfig)).rejects.toMatchObject({
+    code: "REHEARSAL_REVIEW_SNAPSHOT_ATTESTATION_REQUIRED",
+  });
+  await expect(
+    service.attestClosedReviewSnapshots(
+      { ...actor, role: "owner", teamId: "team0" },
+      attestationRequest,
+    ),
+  ).rejects.toMatchObject({ code: "REHEARSAL_COMMISSIONER_REQUIRED" });
+  await expect(
+    service.attestClosedReviewSnapshots(actor, {
+      ...attestationRequest,
+      closureReceiptId: randomUUID(),
+    }),
+  ).rejects.toMatchObject({ code: "REHEARSAL_CLOSED_REVIEW_SCOPE_MISMATCH" });
+  await expect(
+    service.attestClosedReviewSnapshots(actor, {
+      ...attestationRequest,
+      expectedReviews: attestationRequest.expectedReviews.map((r, i) =>
+        i === 0 ? { ...r, persistedSnapshotHash: "0".repeat(64) } : r,
+      ),
+    }),
+  ).rejects.toMatchObject({
+    code: "REHEARSAL_EXPECTED_REVIEW_SNAPSHOT_MISMATCH",
+  });
+  await expect(
+    service.attestClosedReviewSnapshots(actor, {
+      ...attestationRequest,
+      expectedReviews: Array(10).fill(attestationRequest.expectedReviews[0]),
+    }),
+  ).rejects.toMatchObject({
+    code: "REHEARSAL_TEN_DISTINCT_REVIEW_SNAPSHOTS_REQUIRED",
+  });
+  const attested = await service.attestClosedReviewSnapshots(
+    actor,
+    attestationRequest,
+  );
+  expect(attested).toMatchObject({
+    algorithm: "json-persisted-v1",
+    legacyHashesUnchanged: true,
+    reviewProjectionsUnchanged: true,
+    closureUnchanged: true,
+    automaticWake: false,
+  });
+  expect(
+    await service.attestClosedReviewSnapshots(actor, attestationRequest),
+  ).toMatchObject({ receiptId: attested.receiptId, replayed: true });
+  expect(
+    (
+      await f.db.query(
+        "SELECT * FROM runtime_owner_stage_reviews ORDER BY agent_id",
+      )
+    ).rows,
+  ).toEqual(before);
+  expect(
+    (
+      await f.db.query(
+        "SELECT details FROM runtime_receipts WHERE type='owner_stage.closed'",
+      )
+    ).rows[0].details,
+  ).toEqual(closure);
+  expect(
+    (
+      await f.db.query(
+        "SELECT 1 FROM runtime_receipts WHERE type='rehearsal.review_snapshots_attested'",
+      )
+    ).rowCount,
+  ).toBe(1);
+  for (const [path, value] of [
+    ["{observedAt}", "2026-09-08T06:00:00.001Z"],
+    ["{nested,0,completedAt}", "2026-09-08T06:01:00.001Z"],
+    ["{fixtureOnly}", false],
+  ] as const) {
+    await f.db.query(
+      "UPDATE runtime_owner_stage_reviews SET evidence=jsonb_set(evidence,$1::text[],$2::jsonb) WHERE agent_id='agent0'",
+      [path, JSON.stringify(value)],
+    );
+    await expect(service.arm(actor, liveConfig)).rejects.toMatchObject({
+      code: "REHEARSAL_REVIEW_SNAPSHOT_CHANGED",
+    });
+    await expect(
+      service.attestClosedReviewSnapshots(actor, attestationRequest),
+    ).rejects.toMatchObject({
+      code: "REHEARSAL_EXPECTED_REVIEW_SNAPSHOT_MISMATCH",
+    });
+    await f.db.query(
+      "UPDATE runtime_owner_stage_reviews SET evidence=$1 WHERE agent_id='agent0'",
+      [before.find((r) => r.agent_id === "agent0").evidence],
+    );
+  }
+  await expect(
+    service.attestClosedReviewSnapshots(actor, {
+      ...attestationRequest,
+      idempotencyKey: "cannot-re-attest-changed-review",
+    }),
+  ).rejects.toMatchObject({ code: "REHEARSAL_REVIEW_ATTESTATION_CONFLICT" });
   expect((await service.arm(actor, liveConfig)).status).toBe("armed");
   expect(
     (
@@ -616,7 +739,11 @@ it("requires the full current owner set and a matching live onboarding closure b
         "SELECT details FROM runtime_receipts WHERE type='rehearsal.arming'",
       )
     ).rows[0].details.onboarding,
-  ).toMatchObject({ stageId, closureReceiptId: closure.receiptId });
+  ).toMatchObject({
+    stageId,
+    closureReceiptId: closure.receiptId,
+    snapshotAttestationReceiptId: attested.receiptId,
+  });
 });
 it("serializes football claim after stop without locking an outbox row first", async () => {
   await service.arm(actor, config);

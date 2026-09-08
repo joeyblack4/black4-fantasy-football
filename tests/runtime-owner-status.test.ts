@@ -219,3 +219,55 @@ it("preserves uncertain liability and discloses only safe host identifiers; tool
     await f.close();
   }
 });
+
+it("retains only the owner's reviewed research receipt references after onboarding closes", async () => {
+  const f = await fixture();
+  try {
+    await f.db.query(
+      "INSERT INTO runtime_owner_stages(league_id,id,stage,configuration,charter,assignment,content_hash,configured_by,receipt_id,status) VALUES('status-test','closed-stage','onboarding','{}','synthetic','synthetic','synthetic','operator',$1,'reviewed')",
+      [randomUUID()],
+    );
+    for (const agent of ["a", "b"]) {
+      await f.db.query(
+        "INSERT INTO runtime_owner_stage_reviews(league_id,stage_id,agent_id,evidence_hash,evidence,note,reviewed_by,receipt_id) VALUES('status-test','closed-stage',$1,'synthetic',$2,'synthetic','operator',$3)",
+        [
+          agent,
+          {
+            researchBaseline: {
+              status: "verified",
+              search: {
+                receiptId: agent + "-search",
+                completedAt: "2026-09-08T07:00:00Z",
+                source: "firecrawl",
+                details: { private: "NEVER_EXPOSE_RESEARCH_BODY" },
+              },
+              page: {
+                id: agent + "-page",
+                completed_at: "2026-09-08T07:01:00Z",
+                url: "https://example.com/" + agent,
+                details: { private: "NEVER_EXPOSE_PAGE_BODY" },
+              },
+            },
+          },
+          randomUUID(),
+        ],
+      );
+    }
+    const r = await buildOwnerRuntimeStatus(f.db, f.job, f.config);
+    expect(r.runtime.stage?.status).toBe("reviewed");
+    expect(r.runtime.reviewedResearchBaseline).toMatchObject({
+      status: "verified",
+      search: { receiptId: "a-search", provider: "firecrawl" },
+      page: { receiptId: "a-page", url: "https://example.com/a" },
+    });
+    const serialized = JSON.stringify(r);
+    expect(serialized).not.toContain("b-search");
+    expect(serialized).not.toContain("b-page");
+    expect(serialized).not.toContain("NEVER_EXPOSE");
+    expect(r.runtime.reviewedResearchBaseline?.note).toContain(
+      "not a new retrieval",
+    );
+  } finally {
+    await f.close();
+  }
+});

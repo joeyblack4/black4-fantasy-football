@@ -1,12 +1,17 @@
 import { beforeEach, afterEach, it, expect } from "vitest";
 import { testDb } from "./helpers.js";
 import { LeagueService, type Actor } from "../src/league/index.js";
-import { GovernanceService } from "../src/governance/index.js";
+import {
+  GovernanceService,
+  governanceCommandSchema,
+} from "../src/governance/index.js";
 import { RuntimeStore } from "../src/runtime/index.js";
 import { TestDriver, runOne } from "../src/runtime/worker.js";
 import {
   ConventionRuntime,
   createGovernanceReadTools,
+  projectGovernanceSnapshot,
+  GovernanceReadSchema,
 } from "../src/runtime/convention.js";
 import { FranchiseOutbox } from "../src/franchise/outbox.js";
 import { GovernanceActionSchema } from "../src/franchise/schema.js";
@@ -417,6 +422,15 @@ it("MFL owners can commit native menu proposals through the same verified outbox
   const context = (await convention.context("agent0")) as any;
   expect(context.governance.menu).toBeTruthy();
   expect(context.governance.proposals).toHaveLength(1);
+  const sealedDetail: any = await convention.context(
+    "agent0",
+    GovernanceReadSchema.parse({
+      view: "proposal",
+      proposalId: "agent1-native-proposal",
+    }),
+  );
+  expect(sealedDetail.governance.status).toBe("not_visible");
+  expect(JSON.stringify(sealedDetail)).not.toContain("Synthetic policy only");
   await f.db.query(
     "UPDATE mfl_governance_meetings SET discussion_opens_at=clock_timestamp()-interval '1 second' WHERE league_id=$1",
     [leagueId],
@@ -430,6 +444,17 @@ it("MFL owners can commit native menu proposals through the same verified outbox
     [leagueId],
   );
   await convention.tick(leagueId);
+  const visibleDetail: any = await convention.context(
+    "agent0",
+    GovernanceReadSchema.parse({
+      view: "proposal",
+      proposalId: "agent1-native-proposal",
+    }),
+  );
+  expect(visibleDetail.governance.status).toBe("complete");
+  expect(visibleDetail.governance.value.content.rationale).toBe(
+    "Synthetic policy only",
+  );
   const consolidation = new TestDriver("synthetic/convention", async (job) => {
     const view = (await createGovernanceReadTools(f.db, runtime)[0].execute(
       job,
@@ -598,4 +623,261 @@ it("protects future discussion and consolidation turns from early chatter", asyn
     ).status,
   ).toBe("completed");
   expect(calls).toBe(2);
+});
+
+it("exact detail views preserve sealed visibility and lease authority", async () => {
+  const rules = (await league.snapshot(leagueId)).league.rules;
+  for (const i of [0, 1])
+    await governance.execute(owners[i], {
+      type: "submitProposal",
+      leagueId,
+      idempotencyKey: `detail-${i}`,
+      meetingId,
+      proposalId: `private-${i}`,
+      version: "v1",
+      title: `SYNTHETIC ${i}`,
+      rationale: `SYNTHETIC private rationale ${i}`,
+      rules,
+      scoringRules: halfPprRules,
+      teamOrder: owners.map((o) => o.teamId),
+    });
+  await start();
+  await runtime.ingestEvent({
+    agentId: "agent0",
+    causalId: "detail-reader",
+    payload: {},
+  });
+  const job = (await runtime.claim("details", 30000, undefined, ["agent0"]))!;
+  const tool = createGovernanceReadTools(f.db, runtime)[0]!;
+  const mine: any = await tool.execute(job, {
+    view: "proposal",
+    proposalId: "private-0",
+  });
+  expect(mine.governance.status).toBe("complete");
+  expect(mine.governance.value.rationale).toBe("SYNTHETIC private rationale 0");
+  for (const proposalId of ["private-1", "nonexistent"]) {
+    const hidden: any = await tool.execute(job, {
+      view: "proposal",
+      proposalId,
+      section: "rationale",
+    });
+    expect(hidden.governance.status).toBe("not_visible");
+    expect(JSON.stringify(hidden)).not.toContain(
+      "SYNTHETIC private rationale 1",
+    );
+  }
+  await voting();
+  const peer: any = await tool.execute(job, {
+    view: "proposal",
+    proposalId: "private-1",
+    section: "rationale",
+  });
+  expect(peer.governance.text).toBe("SYNTHETIC private rationale 1");
+  expect(Buffer.byteLength(JSON.stringify(peer))).toBeLessThan(24000);
+  await expect(
+    tool.execute(job, {
+      view: "proposal",
+      proposalId: "private-1",
+      teamId: "team1",
+    }),
+  ).rejects.toThrow();
+  await f.db.query("UPDATE runtime_jobs SET fence=fence+1 WHERE id=$1", [
+    job.id,
+  ]);
+  await expect(
+    tool.execute(job, { view: "proposal", proposalId: "private-1" }),
+  ).rejects.toThrow("GOVERNANCE_JOB_AUTHORITY_EXPIRED");
+});
+
+async function largeGovernanceFixture() {
+  // Self-contained public fixture; never copy the private league's chosen menu.
+  const menu = {
+    menuId: "synthetic-sizing-menu",
+    title: "SYNTHETIC supported menu",
+    sourceNote:
+      "Synthetic transport-size evidence only, not native league settings",
+    questions: Array.from({ length: 15 }, (_, q) => ({
+      id: `question-${q}`,
+      label: `SYNTHETIC question ${q}`,
+      options: Array.from({ length: 2 }, (_, o) => ({
+        id: `option-${o}`,
+        label: `SYNTHETIC option ${o}`,
+        content: `SYNTHETIC option body for ${q}/${o}. `.padEnd(340, "."),
+        evidenceRefs: ["synthetic-fixture-only"],
+      })),
+    })),
+    applicationSections: Array.from({ length: 11 }, (_, i) => ({
+      id: `section-${i}`,
+      label: `SYNTHETIC section ${i}`,
+    })),
+  };
+  const proposals = [];
+  for (let i = 0; i < 10; i++)
+    for (let revision = 1; revision <= 3; revision++) {
+      const id = `synthetic-${i}-v${revision}`;
+      const c: any = governanceCommandSchema.parse({
+        type: "submitMflProposal",
+        leagueId,
+        idempotencyKey: id,
+        meetingId,
+        proposalId: id,
+        version: `v${revision}`,
+        title: "SYNTHETIC Unicode sizing",
+        rationale: "🧠".repeat(4000),
+        leaguePolicies: "🏈".repeat(4000),
+        menuId: menu.menuId,
+        selections: Object.fromEntries(
+          menu.questions.map((q: any) => [q.id, q.options[0].id]),
+        ),
+        teamOrder: owners.map((o) => o.teamId),
+        ...(revision > 1
+          ? { replacesProposalId: `synthetic-${i}-v${revision - 1}` }
+          : {}),
+      });
+      proposals.push({
+        id,
+        author_team_id: `team${i}`,
+        version: c.version,
+        title: c.title,
+        content_hash: "f".repeat(64),
+        revision_no: revision,
+        replaces_proposal_id: c.replacesProposalId ?? null,
+        ballot_eligible: revision === 3,
+        content: {
+          rationale: c.rationale,
+          leaguePolicies: c.leaguePolicies,
+          selections: c.selections,
+          teamOrder: c.teamOrder,
+        },
+      });
+    }
+  return {
+    meeting: { id: meetingId },
+    phase: "discussion",
+    host: "mfl",
+    hostVersion: 1,
+    menuHash: "a".repeat(64),
+    menu,
+    members: owners.map((o) => ({ teamId: o.teamId })),
+    proposals,
+    votes: proposals.flatMap((p) =>
+      owners.map((o) => ({
+        proposal_id: p.id,
+        team_id: o.teamId,
+        choice: "yes",
+      })),
+    ),
+    threshold: 8,
+    electorate: 12,
+  };
+}
+it("compact ten-owner history pages retain every exact choice and vote under the provider cap", async () => {
+  const snapshot = await largeGovernanceFixture();
+  expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeGreaterThan(24000);
+  const received: any[] = [],
+    votes: any[] = [];
+  let offset = 0;
+  for (let page = 0; page < 30; page++) {
+    const result: any = projectGovernanceSnapshot(
+      snapshot,
+      GovernanceReadSchema.parse({ view: "summary", offset }),
+    );
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(20500);
+    expect(result.omittedProposalFields).toContain("rationale");
+    expect(result.menu.detailsOmitted).toContain("option.content");
+    expect(JSON.stringify(result)).not.toContain("🧠");
+    received.push(...result.proposals);
+    votes.push(...result.votes);
+    if (!result.hasMore) break;
+    expect(result.nextOffset).toBeGreaterThan(offset);
+    offset = result.nextOffset;
+  }
+  expect(received.map((p) => p.id)).toEqual(
+    snapshot.proposals.map((p) => p.id),
+  );
+  expect(received.map((p) => p.choices)).toEqual(
+    snapshot.proposals.map((p) => p.content.selections),
+  );
+  expect(votes).toEqual(snapshot.votes);
+  const fullMenu: any = projectGovernanceSnapshot(
+    snapshot,
+    GovernanceReadSchema.parse({ view: "menu" }),
+  );
+  expect(fullMenu.status).toBe("complete");
+  expect(fullMenu.value).toEqual(snapshot.menu);
+  expect(Buffer.byteLength(JSON.stringify(fullMenu))).toBeLessThan(20500);
+  const question = snapshot.menu.questions[0],
+    option = question.options[0];
+  const detail: any = projectGovernanceSnapshot(
+    snapshot,
+    GovernanceReadSchema.parse({
+      view: "menu",
+      questionId: question.id,
+      optionId: option.id,
+    }),
+  );
+  expect(detail.status).toBe("complete");
+  expect(detail.value).toEqual(option);
+  await expect(
+    Promise.resolve().then(() =>
+      projectGovernanceSnapshot(
+        snapshot,
+        GovernanceReadSchema.parse({ view: "summary", offset: 1000 }),
+      ),
+    ),
+  ).rejects.toThrow("GOVERNANCE_OFFSET_AHEAD");
+});
+it("oversized proposal and menu sections reconstruct exact Unicode content without silent truncation", async () => {
+  const snapshot = await largeGovernanceFixture(),
+    proposalId = snapshot.proposals[0].id;
+  const oversized: any = projectGovernanceSnapshot(
+    snapshot,
+    GovernanceReadSchema.parse({ view: "proposal", proposalId }),
+  );
+  expect(oversized.status).toBe("tooLarge");
+  expect(oversized.contentReturned).toBe(false);
+  for (const section of ["rationale", "leaguePolicies", "content"] as const) {
+    let offset = 0,
+      text = "";
+    for (let i = 0; i < 20; i++) {
+      const result: any = projectGovernanceSnapshot(
+        snapshot,
+        GovernanceReadSchema.parse({
+          view: "proposal",
+          proposalId,
+          section,
+          offset,
+        }),
+      );
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(20500);
+      expect(result.truncated).toBe(false);
+      expect(result.offsetUnit).toBe("unicode-code-points");
+      text += result.text;
+      if (!result.hasMore) break;
+      offset = result.nextOffset;
+    }
+    expect(text).toBe(
+      section === "content"
+        ? JSON.stringify(snapshot.proposals[0].content)
+        : snapshot.proposals[0].content[section],
+    );
+    expect(text).not.toContain("�");
+  }
+  const largeMenu = {
+    ...snapshot,
+    menu: { ...snapshot.menu, sourceNote: "🧠".repeat(4000) },
+  };
+  let text = "",
+    offset = 0;
+  for (let i = 0; i < 30; i++) {
+    const result: any = projectGovernanceSnapshot(
+      largeMenu,
+      GovernanceReadSchema.parse({ view: "menu", section: "content", offset }),
+    );
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(20500);
+    text += result.text;
+    if (!result.hasMore) break;
+    offset = result.nextOffset;
+  }
+  expect(JSON.parse(text)).toEqual(largeMenu.menu);
 });

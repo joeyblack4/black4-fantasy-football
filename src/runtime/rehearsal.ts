@@ -24,6 +24,32 @@ export const RehearsalArmSchema = z
     reason: z.string().min(10).max(2000),
   })
   .strict();
+const snapshotHash = z.string().regex(/^[a-f0-9]{64}$/);
+export const RehearsalReviewSnapshotAttestationSchema = z
+  .object({
+    stageId: id,
+    closureReceiptId: z.uuid(),
+    idempotencyKey: id,
+    expectedReviews: z
+      .array(
+        z
+          .object({
+            agentId: id,
+            reviewReceiptId: z.uuid(),
+            legacyEvidenceHash: snapshotHash,
+            persistedSnapshotHash: snapshotHash,
+          })
+          .strict(),
+      )
+      .length(10),
+    reason: z.string().trim().min(10).max(4000),
+    evidenceRef: z.string().trim().min(1).max(2000),
+  })
+  .strict();
+/** Distinct versioned hash: JSON persistence normalizes Date values to ISO strings. */
+export function persistedReviewSnapshotHash(value: unknown) {
+  return fingerprint(JSON.parse(JSON.stringify(value)));
+}
 function check(v: unknown, code: string): asserts v {
   if (!v) throw new RuntimeError(code);
 }
@@ -80,6 +106,7 @@ async function requireClosedLiveOnboarding(
   tx: Tx,
   leagueId: string,
   members: any[],
+  requireSnapshotAttestation = true,
 ) {
   const teams = (
     await tx.query("SELECT id,kind FROM league_teams WHERE league_id=$1", [
@@ -144,7 +171,6 @@ async function requireClosedLiveOnboarding(
           closed.reviewReceiptId === review.receipt_id &&
           closed.evidenceHash === review.evidence_hash &&
           closed.researchStatus === "verified" &&
-          review.evidence_hash === fingerprint(review.evidence) &&
           review.brand_owner === owner.owner_id &&
           review.brand_agent === owner.agent_id &&
           review.brand_team === owner.team_id
@@ -152,10 +178,51 @@ async function requireClosedLiveOnboarding(
       }),
     "REHEARSAL_CURRENT_OWNER_REVIEWS_REQUIRED",
   );
+  const snapshots = reviews.map((review) => ({
+    agentId: review.agent_id,
+    reviewReceiptId: review.receipt_id,
+    legacyEvidenceHash: review.evidence_hash,
+    persistedSnapshotHash: persistedReviewSnapshotHash(review.evidence),
+  }));
+  const attestation = (
+    await tx.query(
+      "SELECT details FROM runtime_receipts WHERE type='rehearsal.review_snapshots_attested' AND details->>'leagueId'=$1 AND details->>'stageId'=$2 AND details->>'closureReceiptId'=$3 ORDER BY seq DESC LIMIT 1",
+      [leagueId, stage.id, closure.receiptId],
+    )
+  ).rows[0]?.details;
+  if (requireSnapshotAttestation) {
+    check(
+      attestation?.algorithm === "json-persisted-v1" &&
+        attestation.version === 1 &&
+        attestation.stageContentHash === stage.content_hash &&
+        Array.isArray(attestation.snapshots) &&
+        attestation.snapshots.length === 10 &&
+        new Set(attestation.snapshots.map((r: any) => r.agentId)).size === 10,
+      "REHEARSAL_REVIEW_SNAPSHOT_ATTESTATION_REQUIRED",
+    );
+    check(
+      snapshots.every((snapshot) => {
+        const attested = attestation.snapshots.find(
+          (r: any) => r.agentId === snapshot.agentId,
+        );
+        return (
+          attested &&
+          attested.reviewReceiptId === snapshot.reviewReceiptId &&
+          attested.legacyEvidenceHash === snapshot.legacyEvidenceHash &&
+          attested.persistedSnapshotHash === snapshot.persistedSnapshotHash &&
+          persistedReviewSnapshotHash(attested.evidence) ===
+            snapshot.persistedSnapshotHash
+        );
+      }),
+      "REHEARSAL_REVIEW_SNAPSHOT_CHANGED",
+    );
+  }
   return {
     stageId: stage.id,
     closureReceiptId: closure.receiptId,
     contentHash: stage.content_hash,
+    snapshotAttestationReceiptId: attestation?.receiptId ?? null,
+    snapshotDescriptors: snapshots,
     ownerReviewReceiptIds: closure.ownerReviews.map(
       (r: any) => r.reviewReceiptId,
     ),
@@ -452,6 +519,97 @@ export class RehearsalRuntime {
     readonly db: Db,
     readonly runtime: RuntimeStore,
   ) {}
+  /** Explicit review-format attestation; never changes owner evidence or legacy hashes. */
+  async attestClosedReviewSnapshots(actor: Actor, input: unknown) {
+    authorize(actor);
+    const request = RehearsalReviewSnapshotAttestationSchema.parse(input);
+    check(
+      new Set(request.expectedReviews.map((r) => r.agentId)).size === 10,
+      "REHEARSAL_TEN_DISTINCT_REVIEW_SNAPSHOTS_REQUIRED",
+    );
+    const requestHash = fingerprint(request);
+    return transaction(this.db, async (tx) => {
+      await lock(tx, actor.leagueId);
+      const onboarding = await requireClosedLiveOnboarding(
+        tx,
+        actor.leagueId,
+        await owners(tx, actor.leagueId),
+        false,
+      );
+      check(
+        onboarding.stageId === request.stageId &&
+          onboarding.closureReceiptId === request.closureReceiptId,
+        "REHEARSAL_CLOSED_REVIEW_SCOPE_MISMATCH",
+      );
+      check(
+        onboarding.snapshotDescriptors.every((actual) => {
+          const expected = request.expectedReviews.find(
+            (r) => r.agentId === actual.agentId,
+          );
+          return expected && fingerprint(expected) === fingerprint(actual);
+        }),
+        "REHEARSAL_EXPECTED_REVIEW_SNAPSHOT_MISMATCH",
+      );
+      const existing = (
+        await tx.query(
+          "SELECT details FROM runtime_receipts WHERE type='rehearsal.review_snapshots_attested' AND details->>'leagueId'=$1 AND (details->>'idempotencyKey'=$2 OR (details->>'stageId'=$3 AND details->>'closureReceiptId'=$4)) ORDER BY seq DESC LIMIT 1",
+          [
+            actor.leagueId,
+            request.idempotencyKey,
+            request.stageId,
+            request.closureReceiptId,
+          ],
+        )
+      ).rows[0]?.details;
+      if (existing) {
+        check(
+          existing.requestHash === requestHash,
+          "REHEARSAL_REVIEW_ATTESTATION_CONFLICT",
+        );
+        // A replay also revalidates immutable attested contents, not just its key.
+        await requireClosedLiveOnboarding(
+          tx,
+          actor.leagueId,
+          await owners(tx, actor.leagueId),
+        );
+        return { ...existing, replayed: true };
+      }
+      const reviews = (
+        await tx.query(
+          "SELECT agent_id,evidence FROM runtime_owner_stage_reviews WHERE league_id=$1 AND stage_id=$2 ORDER BY agent_id",
+          [actor.leagueId, request.stageId],
+        )
+      ).rows;
+      const details = {
+        receiptId: randomUUID(),
+        algorithm: "json-persisted-v1",
+        version: 1,
+        leagueId: actor.leagueId,
+        stageId: request.stageId,
+        closureReceiptId: request.closureReceiptId,
+        stageContentHash: onboarding.contentHash,
+        idempotencyKey: request.idempotencyKey,
+        requestHash,
+        reason: request.reason,
+        evidenceRef: request.evidenceRef,
+        reviewedBy: actor.id,
+        snapshots: onboarding.snapshotDescriptors.map((snapshot) => ({
+          ...snapshot,
+          evidence: reviews.find((r) => r.agent_id === snapshot.agentId)!
+            .evidence,
+        })),
+        legacyHashesUnchanged: true,
+        reviewProjectionsUnchanged: true,
+        closureUnchanged: true,
+        automaticWake: false,
+      };
+      await tx.query(
+        "INSERT INTO runtime_receipts(type,details) VALUES('rehearsal.review_snapshots_attested',$1)",
+        [details],
+      );
+      return { ...details, replayed: false };
+    });
+  }
   async arm(actor: Actor, input: unknown) {
     authorize(actor);
     const request = RehearsalArmSchema.parse(input),
