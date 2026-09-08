@@ -343,9 +343,13 @@ describe("durable runtime", () => {
   });
   it("late provider usage is observed without allowing stale actions", async () => {
     await event();
-    const old = (await store.claim("old", 10))!;
+    const old = (await store.claim("old", 30000))!;
     const reservation = await store.reserve(old, 100);
-    await pause(20);
+    // Expire only after reservation: CI latency must not preempt the behavior under test.
+    await fixture.db.query(
+      "UPDATE runtime_jobs SET lease_until=clock_timestamp()-interval '1 second' WHERE id=$1",
+      [old.id],
+    );
     await store.claim("new");
     await store.observeCost(old, reservation, 12);
     const r = (await store.snapshot()).reservations[0];
