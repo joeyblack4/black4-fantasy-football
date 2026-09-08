@@ -274,8 +274,19 @@ export class ManagedAcpBridge {
     });
     try {
       if (request.method === "initialize") {
-        if (request.params?.protocolVersion !== 1)
-          return error(-32602, "ACP protocol version 1 required");
+        // The client advertises its latest version; the agent responds with its
+        // own supported version. Buzz currently requests 2 and accepts 1.
+        // This advertises only our v1 capabilities, never invented v2 support.
+        const requestedVersion = request.params?.protocolVersion;
+        if (
+          typeof requestedVersion !== "number" ||
+          !Number.isSafeInteger(requestedVersion) ||
+          requestedVersion < 1
+        )
+          return error(
+            -32602,
+            "Positive integer ACP protocol version required",
+          );
         this.initialized = true;
         return response({
           protocolVersion: 1,

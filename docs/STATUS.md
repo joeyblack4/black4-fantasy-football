@@ -8,10 +8,10 @@ The league is in private setup, not draft-ready or publicly launched. The actual
 - Complete supported constitution proposals, authenticated owner votes, eight approvals and exact proposal/hash ratification, including a mobile review interface.
 - Durable priority jobs, private memory, appointments, same-model staff reports, tool/action outboxes, wallet reservations and provider billing reconciliation. Subscription expenses share the inference wallet; uncertain charges retain reservations.
 - Versioned model, serving-provider, harness and Buzz-bridge manifests. Exact routing, response/generation checks, separately restricted-key provisioning and bounded read-tool use. No authenticated inference has run.
-- Buzz managed ACP identity handoff, scoped archive, polling, independent DM initiation and outbound uncertainty recovery. Synthetic protocol tests passed. Real Desktop agent onboarding and peer/human message tests are pending.
+- Buzz managed ACP identity handoff, scoped archive, polling, independent DM initiation and outbound uncertainty recovery. All ten real Desktop identities were created under Joey's approval and passed managed initialization after a protocol-negotiation fix. The private founding-convention room has Joey plus the ten exact AI identities. Peer/human exchanges and archive/polling activation remain pending; no model jobs are running.
 - Cumulative scoring/corrections and source availability; safe metered official NFL research retrieval. Authenticated paid-feed mapping and complete scoring reconciliation remain blocked on access.
 - Exact-version public-content approvals, scheduled X publishing with account verification and uncertain-send holds. No real X post has been sent.
-- Sanitized public feed separated from owner APIs. The Black4 page includes the original right-side technology rail, all ten model brands, league tools and scroll-based model focus. Desktop/mobile review, static build and scoped ESLint passed. No site publication or real lead-intake receipt is claimed.
+- Sanitized public feed separated from owner APIs. The local page includes a right-side technology rail, all ten model brands, league tools and scroll-based model focus. Desktop/mobile review, static build and scoped ESLint passed. Joey requested closer alignment to the actual Black4 brand and right-entry/downward logo placement; those revisions are in `BACKLOG.md` and are not yet implemented. No site publication or real lead-intake receipt is claimed.
 
 Current integrated validation: TypeScript and **200 tests across 29 files passed** on isolated PostgreSQL 17 at September 7, 7:16 PM Pacific. File concurrency is bounded to four so independent database fixtures do not exhaust laptop/test-server resources; transaction race tests remain concurrent. See `IMPLEMENTATION_LOG.md`; older test totals are historical. Tests run in isolated PostgreSQL schemas with synthetic identities and fake provider transports. They are not live-agent evidence.
 
@@ -28,7 +28,7 @@ Run `scripts/readiness.ts` using an explicit private database URL file and leagu
 Current critical gaps:
 
 1. Funded OpenRouter management access, exact endpoint/tariff verification, negative restriction tests and ten authenticated model/tool/billing canaries.
-2. Completed Buzz identity onboarding, real peer/human exchanges, exact participant bindings and disclosed commissioner archive access.
+2. Real Buzz peer/human exchanges, exact participant bindings and disclosed commissioner archive access. Identity creation and managed initialization are complete, but do not satisfy these collaboration gates.
 3. Chris Schaaf’s Buzz/login access and confirmed draft availability.
 4. Licensed NFL entitlement, real player/schedule import, supported field mapping and historical-game reconciliation.
 5. Real owner-authored convention, brands and full-depth draft queues; actual full-draft rehearsal and unattended live operation.

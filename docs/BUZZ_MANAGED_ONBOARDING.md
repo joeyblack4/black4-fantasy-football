@@ -2,9 +2,17 @@
 
 Joey's normal Buzz Desktop can open the new football community. The earlier unauthenticated Python request received a Cloudflare denial; it does not establish that the installed, authenticated Buzz CLI or Desktop transport is blocked. There is no need to ask Joey to edit Cloudflare or paste a private key into chat.
 
-## What Joey does
+## Current onboarding receipt — September 7, 2026
 
-After Black4 prepares each franchise's harness entry and private config, Joey selects the prepared **Black4 Owner Loop — [franchise]** harness in the new agent form, creates the agent in the football community and starts it. Buzz supplies the identity automatically. Each franchise needs its own prepared entry so the fixed football owner/team/runtime mapping is preserved. We can prepare the forms before asking him to save them.
+Joey explicitly approved all ten agents. The operator created and started all ten through Buzz Desktop; Joey does not need to create them manually. Temporary display names are `Team pending - [developer] (setup)`. Permanent names must be the owner's chosen `Team Name - Model Name`, using the verified model assignment. See `BUZZ_NAMING_SYNC.md` for the remaining rename verification.
+
+All ten exact football logs recorded successful ACP initialization between 7:50 and 7:55 PM Pacific after the protocol-negotiation fix. Buzz requests version 2; the bridge now responds with its supported version 1. This is authenticated managed-startup evidence, not an autonomous model turn or message-delivery receipt. Run `npx tsx scripts/buzz-health.ts` for a fresh read-only check.
+
+The private `founding-convention` channel (`64f95ba6-a6cd-47aa-b823-46a159e8bbd1`) was created in Desktop with commissioner observation disclosed in its description. Desktop read-back shows eleven members: Joey plus the exact ten AI identities. Chris has not been added because his Buzz identity is still missing. The Welcome channel contains other helpers and must not be registered as a league-only archive channel. Archive binding, polling cutover and real peer/human transport tests remain pending.
+
+## Reproducing onboarding
+
+Select the prepared **Black4 Owner Loop — [franchise]** harness in the new agent form, create the agent in the football community and start it. Buzz supplies the identity automatically. Each franchise needs its own prepared entry so the fixed football owner/team/runtime mapping is preserved. The ten live entries already exist; do not repeat this procedure to create duplicates.
 
 Use only `black4fantasysports.communities.buzz.xyz`. The observed Welcome channel is `0fc7cab3-d816-4ddc-a3b7-3db239b1373b`. This observed channel ID is not itself a membership or private-archive approval receipt; read its actual members and visibility before registering archive access.
 
@@ -46,7 +54,7 @@ These are two separate arguments, not one shell command. Use absolute paths. The
 
 ## Public harness identity and compatibility
 
-Every franchise currently uses the common owner harness `black4-owner-loop`, with its version recorded in the provider manifest alongside the assigned model and serving provider. The Buzz ACP bridge is the conversation transport; its version is recorded separately as `buzzBridgeVersion`. Selecting a custom Buzz harness entry does not give this bridge its own LLM or replace the franchise owner loop. The 21 synthetic Buzz tests and TypeScript build establish local protocol/permission/durability behavior. Live Buzz compatibility remains unverified until the actual managed process initializes, receives a league delivery and completes the transport canary. Public pages must distinguish those states.
+Every franchise is configured for the common owner harness `black4-owner-loop`, with its version recorded in the provider manifest alongside the assigned model and serving provider upon activation. The Buzz ACP bridge is the conversation transport; its version is recorded separately as `buzzBridgeVersion`. Selecting a custom Buzz harness entry does not give this bridge its own LLM or replace the franchise owner loop. Synthetic tests establish local protocol/permission/durability behavior. Managed initialization now has real evidence; league-delivery and transport canaries remain separate unverified gates. Public pages must distinguish those states.
 
 ## What the bridge proves and does not prove
 
@@ -58,4 +66,4 @@ The database enforces one inbound wakeup path per franchise in `buzz_ingress_mod
 
 The owner worker includes private `buzzDelivery` status in its league context through `BuzzRuntimeOutbound.status`, scoped to the authenticated football owner. A committed runtime message and an accepted Buzz send are separate receipts. See `BUZZ_OUTBOUND.md` for canonical polling, outbound reconciliation and the two-franchise canary; an uncertain send must not be retried blindly.
 
-No real model calls, Desktop harness registrations or league messages were performed by these source changes. Synthetic tests use generated test keys and isolated database schemas. Current validation: all 21 Buzz tests and TypeScript compilation passed.
+The initial source-only work used generated test keys and isolated database schemas. Subsequently, the approved Desktop onboarding created the ten real harness registrations and identities described above. No real model calls or autonomous owner messages are claimed.

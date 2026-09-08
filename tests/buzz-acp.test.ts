@@ -97,6 +97,87 @@ afterEach(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
 });
 describe("Buzz-managed ACP bridge using synthetic keys and no network", () => {
+  it("negotiates Buzz's v2 initialization to supported v1 and completes model discovery/bootstrap without activating a model", async () => {
+    await f.db.query(
+      "UPDATE runtime_agents SET model='unactivated/synthetic' WHERE id=$1",
+      [config.agentId],
+    );
+    await storeManagedIdentity(
+      f.db,
+      config,
+      managedIdentity({
+        BUZZ_RELAY_URL: LEAGUE_COMMUNITY,
+        BUZZ_PRIVATE_KEY: syntheticKey,
+      }),
+    );
+    const bridge = new ManagedAcpBridge(
+      f.db,
+      { ...config, bootstrapOnly: true },
+      { synthetic: true },
+    );
+    const call = async (
+      id: number,
+      method: string,
+      params: Record<string, unknown> = {},
+    ) => (await bridge.handle({ jsonrpc: "2.0", id, method, params })) as any;
+    for (const protocolVersion of [null, 0, -1, 1.5, "2"])
+      expect(
+        (await call(1, "initialize", { protocolVersion })).error.code,
+      ).toBe(-32602);
+    const init = await call(2, "initialize", {
+      protocolVersion: 2,
+      clientInfo: {
+        name: "buzz-acp",
+        version: "synthetic-installed-client-shape",
+      },
+      clientCapabilities: {
+        fs: { readTextFile: true, writeTextFile: true },
+        terminal: true,
+      },
+    });
+    expect(init.result.protocolVersion).toBe(1);
+    expect(init.result.authMethods).toEqual([]);
+    expect(init.result.agentCapabilities.loadSession).toBe(false);
+    // The Buzz `models` command uses initialize + session/new; both succeed.
+    const session = await call(3, "session/new", {
+      cwd: "/tmp/synthetic",
+      mcpServers: [],
+      model: "unactivated/synthetic",
+      systemPrompt: "Untrusted client configuration",
+    });
+    expect(session.result.sessionId).toEqual(expect.any(String));
+    expect(session.result.models).toBeUndefined();
+    expect(session.result.configOptions).toBeUndefined();
+    expect(
+      (
+        await call(4, "session/set_model", {
+          sessionId: session.result.sessionId,
+          modelId: "other/provider",
+        })
+      ).error.code,
+    ).toBe(-32601);
+    const prompt = await call(5, "session/prompt", {
+      sessionId: session.result.sessionId,
+      prompt: [{ type: "text", text: "SYNTHETIC automatic onboarding" }],
+    });
+    expect(prompt.result.stopReason).toBe("end_turn");
+    expect(prompt.result._meta.black4).toMatchObject({
+      delivery: "bootstrap_only",
+      modelCalls: 0,
+      queued: false,
+    });
+    expect((await f.db.query("SELECT * FROM runtime_jobs")).rowCount).toBe(0);
+    expect(
+      (await f.db.query("SELECT * FROM buzz_acp_deliveries")).rowCount,
+    ).toBe(0);
+    expect(
+      (
+        await f.db.query("SELECT model FROM runtime_agents WHERE id=$1", [
+          config.agentId,
+        ])
+      ).rows[0].model,
+    ).toBe("unactivated/synthetic");
+  });
   it("decodes managed nsec with checksum and refuses another community", () => {
     const nsec = testNsec(syntheticKey);
     expect(decodePrivateKey(nsec)).toBe(syntheticKey);
