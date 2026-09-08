@@ -1,4 +1,5 @@
 import { it, expect } from "vitest";
+import { z } from "zod";
 import { OpenRouterDriver } from "../src/providers/openrouter.js";
 import { objectToolParameters } from "../src/providers/tool-schema.js";
 import type { Job } from "../src/runtime/index.js";
@@ -244,12 +245,16 @@ it.each([
       x.requests[1].messages.find((m: any) => m.role === "tool").content,
     );
     expect(result.code).toBe("INVALID_TOOL_ARGUMENTS");
-    expect(diagnostics).toContainEqual({
-      kind: "owner_read_tool_rejected",
-      code: "INVALID_TOOL_ARGUMENTS",
-      tool: "read",
-      executed: false,
-    });
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "owner_read_tool_rejected",
+          code: "INVALID_TOOL_ARGUMENTS",
+          tool: "read",
+          executed: false,
+        }),
+      ]),
+    );
     expect(JSON.stringify(diagnostics)).not.toContain("PRIVATE_TOOL_ARGUMENT");
     expect(x.requests).toHaveLength(2);
   },
@@ -475,4 +480,208 @@ it("intersects rehearsal and onboarding permissions without allowing either scop
   expect(x.requests[1].messages.at(-1).content).toContain(
     "PROVIDER_ACTION_PERMISSION_DENIED",
   );
+});
+
+function decision(actions: unknown[]) {
+  return {
+    finish_reason: "stop",
+    message: {
+      content: JSON.stringify({
+        actions,
+        summary: "Synthetic bounded decision",
+      }),
+    },
+  };
+}
+it("explicitly keeps optional tool fields non-strict and repairs invalid union arguments without leaking values", async () => {
+  const schema = z.discriminatedUnion("type", [
+    z.object({ type: z.literal("rules") }).strict(),
+    z
+      .object({
+        type: z.literal("scores"),
+        week: z.number().int().positive().optional(),
+      })
+      .strict(),
+  ]);
+  const diagnostics: any[] = [];
+  let reads = 0;
+  const toolCall = (args: unknown) => ({
+    finish_reason: "tool_calls",
+    message: {
+      tool_calls: [
+        {
+          id: "fixture-read",
+          type: "function",
+          function: { name: "mfl_read", arguments: JSON.stringify(args) },
+        },
+      ],
+    },
+  });
+  const x = setup(
+    [
+      toolCall({
+        type: "scores",
+        week: null,
+        private_secret_key: "DO-NOT-ECHO-VALUE",
+      }),
+      toolCall({ type: "rules" }),
+      final,
+      final,
+    ],
+    {
+      diagnostic: async (value: unknown) => {
+        diagnostics.push(value);
+      },
+      readTools: [
+        {
+          name: "mfl_read",
+          description: "Synthetic owner read",
+          parameters: z.toJSONSchema(schema),
+          execute: async (_job: Job, args: unknown) => {
+            const parsed = schema.parse(args);
+            reads++;
+            return parsed;
+          },
+        },
+      ],
+    },
+  );
+  await x.driver.run(job);
+  expect(reads).toBe(1);
+  expect(x.requests).toHaveLength(3);
+  expect(x.requests[0].tools[0].function.strict).toBe(false);
+  expect(x.requests[0].tools[0].function.parameters.required).toEqual(["type"]);
+  const rejected = diagnostics.find(
+    (d) => d.kind === "owner_read_tool_rejected",
+  );
+  expect(rejected).toMatchObject({
+    executed: false,
+    unknownFieldCount: 1,
+    providedFields: [
+      { key: "type", type: "string" },
+      { key: "week", type: "null" },
+    ],
+  });
+  expect(rejected.issues).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        code: "invalid_type",
+        path: ["week"],
+        expectedType: "number",
+      }),
+    ]),
+  );
+  const safe =
+    JSON.stringify(rejected) +
+    x.requests[1].messages
+      .filter((m: any) => m.role === "tool")
+      .map((m: any) => m.content)
+      .join("");
+  expect(safe).not.toContain("DO-NOT-ECHO-VALUE");
+  expect(safe).not.toContain("private_secret_key");
+});
+
+function fullMemoryJob(): Job {
+  return {
+    ...job,
+    memory: [
+      ...Array.from({ length: 4 }, (_, i) => ({
+        key: `existing-${i}`,
+        content: "x".repeat(8000),
+        version: 1,
+      })),
+      { key: "existing-4", content: "x".repeat(760), version: 1 },
+    ],
+  };
+}
+it("repairs memory overflow as a full model-authored batch, preserving existing memory and all charges", async () => {
+  const scoped = fullMemoryJob();
+  const before = JSON.stringify(scoped.memory);
+  const diagnostics: any[] = [];
+  const keep = {
+    type: "remember",
+    key: "existing-4",
+    content: "Useful concise revised knowledge",
+  };
+  const x = setup(
+    [
+      decision([
+        { type: "remember", key: "new", content: "n".repeat(60) },
+        keep,
+      ]),
+      decision([keep]),
+    ],
+    {
+      diagnostic: async (d: unknown) => {
+        diagnostics.push(d);
+      },
+    },
+  );
+  const result = await x.driver.run(scoped);
+  expect(result).toMatchObject({ actions: [keep], costMicros: 2000 });
+  expect(JSON.stringify(scoped.memory)).toBe(before);
+  expect(
+    x.requests[0].messages.some((m: any) =>
+      m.content.includes('"usedBytes":32760'),
+    ),
+  ).toBe(true);
+  expect(diagnostics).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        memoryCapacity: {
+          maxBytes: 32768,
+          projectedBytes: 32820,
+          maxKeys: 100,
+          projectedKeys: 6,
+          actionIndex: 0,
+        },
+      }),
+    ]),
+  );
+  expect(x.requests[1].messages.at(-1).content).toContain(
+    "No proposed actions were executed",
+  );
+});
+it("accepts an owner-authored smaller replacement before a new memory and counts UTF-8 bytes", async () => {
+  const actions = [
+    { type: "remember", key: "existing-4", content: "Smaller" },
+    { type: "remember", key: "new", content: "😀".repeat(60) },
+  ];
+  const x = setup([decision(actions)]);
+  expect((await x.driver.run(fullMemoryJob())).actions).toEqual(actions);
+  const rejected = setup([
+    decision([{ type: "remember", key: "new", content: "😀😀😀" }]),
+  ]);
+  await expect(rejected.driver.run(fullMemoryJob())).rejects.toMatchObject({
+    message: "PROVIDER_MEMORY_CAPACITY_EXCEEDED",
+    costMicros: 1000,
+  });
+  expect(rejected.requests).toHaveLength(1);
+});
+it("enforces the existing key cap while allowing replacement and never adding an unbudgeted retry", async () => {
+  const scoped = {
+    ...job,
+    memory: Array.from({ length: 100 }, (_, i) => ({
+      key: `key-${i}`,
+      content: "kept",
+      version: 1,
+    })),
+  };
+  const x = setup([
+    decision([{ type: "remember", key: "new", content: "too many keys" }]),
+  ]);
+  await expect(x.driver.run(scoped)).rejects.toMatchObject({
+    message: "PROVIDER_MEMORY_CAPACITY_EXCEEDED",
+    costMicros: 1000,
+  });
+  expect(x.requests).toHaveLength(1);
+  const replacement = {
+    type: "remember",
+    key: "key-0",
+    content: "replacement",
+  };
+  expect(
+    (await setup([decision([replacement])]).driver.run(scoped)).actions,
+  ).toEqual([replacement]);
+  expect(scoped.memory[0].content).toBe("kept");
 });

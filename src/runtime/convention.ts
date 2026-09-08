@@ -5,6 +5,10 @@ import { getFootballHost } from "../league/host.js";
 import { GovernanceService } from "../governance/index.js";
 import type { OwnerReadTool } from "../providers/openrouter.js";
 import { RuntimeError, type Job, type RuntimeStore } from "./index.js";
+import {
+  activeConventionPause,
+  assertConventionNotPaused,
+} from "./convention-control.js";
 
 export const ConventionLimitsSchema = z
   .object({
@@ -360,6 +364,7 @@ export async function reserveConventionTurn(
     ])
   ).rows[0]?.execution_mode;
   if (mode === "provider_canary") return;
+  await assertConventionNotPaused(tx, row.league_id, row.meeting_id);
   const host = await getFootballHost(tx, row.league_id);
   check(
     host.kind === row.host_kind && host.version === row.host_version,
@@ -581,10 +586,14 @@ export class ConventionRuntime {
   /** Safe to repeat after crashes. Wake job and wave receipt commit atomically. */
   async tick(leagueId: string) {
     return transaction(this.db, async (tx) => {
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,7044))",
+        [leagueId],
+      );
       const waves = (
         await tx.query(
           `SELECT w.*,c.host_kind,c.host_version,c.synthetic,clock_timestamp() AS now FROM runtime_convention_waves w JOIN runtime_conventions c USING(league_id,meeting_id)
-         WHERE w.league_id=$1 AND c.status='active' AND w.status='pending' AND w.due_at<=clock_timestamp()
+         WHERE w.league_id=$1 AND c.status='active' AND w.status='pending' AND w.due_at<=clock_timestamp() AND NOT EXISTS(SELECT 1 FROM runtime_convention_pauses p WHERE p.league_id=c.league_id AND p.meeting_id=c.meeting_id AND p.status='paused')
          ORDER BY w.due_at FOR UPDATE OF w SKIP LOCKED`,
           [leagueId],
         )
@@ -655,8 +664,15 @@ export class ConventionRuntime {
       )
     ).rows[0];
     if (!row) return { status: "not-started" };
+    const pause = await activeConventionPause(
+      this.db,
+      b.league_id,
+      row.meeting_id,
+    );
+    if (pause) row.now = pause.paused_at;
     return {
-      status: "managed",
+      status: pause ? "paused" : "managed",
+      pause,
       meetingId: row.meeting_id,
       phase: phase(row, row.now),
       limits: row.limits,

@@ -80,6 +80,7 @@ export const mflGovernanceCommands = [
     .object({
       ...common,
       type: z.literal("approveMflConstitution"),
+      revalidationReceiptId: z.uuid().optional(),
       decisionId: z.uuid(),
       proposalId: id,
       proposalHash: sha,
@@ -98,6 +99,14 @@ export const mflGovernanceCommands = [
           z
             .object({
               sectionId: id,
+              nativeScope: z
+                .object({
+                  host: z.string().regex(/^www\d{2}\.myfantasyleague\.com$/),
+                  season: z.number().int().min(2026).max(2100),
+                  leagueId: z.string().regex(/^\d{4,5}$/),
+                })
+                .strict()
+                .optional(),
               source: z.enum(["mfl-native-ui", "mfl-api"]),
               reference: z.string().min(1).max(1000),
               observedHash: sha,
@@ -113,3 +122,55 @@ export const mflGovernanceCommands = [
     .strict(),
 ] as const;
 export type MflMenu = z.infer<typeof MflMenuSchema>;
+
+/** Operator-only nonsecret configuration evidence. Never sent to an owner tool. */
+export const MflProductionMappingSchema = z
+  .object({
+    host: z.literal("www43.myfantasyleague.com"),
+    season: z.literal(2026),
+    mflLeagueId: z.literal("62282"),
+    configRef: id,
+    franchises: z
+      .array(
+        z
+          .object({
+            teamId: id,
+            ownerId: id,
+            franchiseId: z.string().regex(/^(?!0000)\d{4}$/),
+          })
+          .strict(),
+      )
+      .length(12),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    for (const key of ["teamId", "ownerId", "franchiseId"] as const)
+      if (new Set(value.franchises.map((x) => x[key])).size !== 12)
+        ctx.addIssue({
+          code: "custom",
+          message: "Twelve unique " + key + " mappings required",
+        });
+  });
+const revalidationCommon = {
+  ...common,
+  expectedHostVersion: z.number().int().positive(),
+  mapping: MflProductionMappingSchema,
+  reason: z.string().trim().min(10).max(2000),
+  evidenceRef: z.string().trim().min(8).max(2000),
+};
+export const PrepareMflReturnAnchorSchema = z
+  .object({
+    ...revalidationCommon,
+    decisionId: z.uuid(),
+    proposalId: id,
+    proposalHash: sha,
+    menuHash: sha,
+  })
+  .strict();
+export const RevalidateMflReturnSchema = z
+  .object({
+    ...revalidationCommon,
+    anchorReceiptId: z.uuid(),
+    rehearsalEpoch: id,
+  })
+  .strict();

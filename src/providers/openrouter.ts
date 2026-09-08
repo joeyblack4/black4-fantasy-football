@@ -10,9 +10,45 @@ import {
 } from "../runtime/worker.js";
 import { usdToMicros } from "../money.js";
 import type { ManifestRegistry } from "./manifests.js";
-import { objectToolParameters } from "./tool-schema.js";
+import {
+  objectToolParameters,
+  safeValidationIssues,
+  safeToolArgumentShape,
+} from "./tool-schema.js";
 import { validateStructuredOwnerMemory } from "../runtime/owner-memory-schema.js";
 
+class MemoryCapacityError extends Error {
+  constructor(
+    readonly quota: {
+      maxBytes: number;
+      projectedBytes: number;
+      maxKeys: number;
+      projectedKeys: number;
+      actionIndex: number;
+    },
+  ) {
+    super("PROVIDER_MEMORY_CAPACITY_EXCEEDED");
+  }
+}
+function validateMemoryCapacity(job: Job, actions: DriverResult["actions"]) {
+  const memory = new Map((job.memory ?? []).map((m) => [m.key, m.content]));
+  for (const [actionIndex, action] of actions.entries())
+    if (action.type === "remember") {
+      memory.set(action.key, action.content);
+      const projectedBytes = [...memory.values()].reduce(
+        (sum, content) => sum + Buffer.byteLength(content),
+        0,
+      );
+      if (projectedBytes > 32768 || memory.size > 100)
+        throw new MemoryCapacityError({
+          maxBytes: 32768,
+          projectedBytes,
+          maxKeys: 100,
+          projectedKeys: memory.size,
+          actionIndex,
+        });
+    }
+}
 const DecisionSchema = z
   .object({
     actions: z.array(ActionSchema).max(10),
@@ -305,6 +341,21 @@ export class OpenRouterDriver implements AgentDriver {
         content: JSON.stringify({
           now: new Date().toISOString(),
           job,
+          ...(!config.identity?.canary
+            ? {
+                memoryCapacity: {
+                  maxBytes: 32768,
+                  usedBytes: (job.memory ?? []).reduce(
+                    (sum, m) => sum + Buffer.byteLength(m.content),
+                    0,
+                  ),
+                  maxKeys: 100,
+                  usedKeys: (job.memory ?? []).length,
+                  instruction:
+                    "Memory writes replace an existing key or add a new key and must fit at each action in order. Preserve existing knowledge; do not delete or automatically drop memory. If full, choose a concise update to an existing key or omit an unnecessary new remember action yourself, while retaining useful authorized actions. The server checks the complete batch atomically.",
+                },
+              }
+            : {}),
           leagueContext: context ?? {
             availability: "unknown",
             instruction:
@@ -392,6 +443,7 @@ export class OpenRouterDriver implements AgentDriver {
                   type: "function",
                   function: {
                     name: t.name,
+                    strict: false,
                     description: t.description,
                     parameters: objectToolParameters(t.parameters),
                   },
@@ -806,9 +858,9 @@ export class OpenRouterDriver implements AgentDriver {
               throw new Error("PROVIDER_TOOL_FORBIDDEN");
             let result: unknown;
             let argumentFailure = false;
+            let argumentsValue: unknown;
             try {
               if (!tool) throw new Error("TOOL_NOT_AVAILABLE");
-              let argumentsValue: unknown;
               try {
                 if (
                   typeof call.function.arguments !== "string" ||
@@ -837,12 +889,24 @@ export class OpenRouterDriver implements AgentDriver {
                   executed: true,
                 });
             } catch (error) {
-              if (argumentFailure) {
+              const validationIssues =
+                error instanceof z.ZodError
+                  ? safeValidationIssues(
+                      tool?.parameters ?? { type: "object" },
+                      error,
+                    )
+                  : [];
+              if (argumentFailure || error instanceof z.ZodError) {
                 const diagnostic = {
                   kind: "owner_read_tool_rejected",
                   code: "INVALID_TOOL_ARGUMENTS",
-                  tool: tool!.name,
+                  tool: tool?.name ?? "unavailable",
                   executed: false,
+                  ...safeToolArgumentShape(
+                    tool?.parameters ?? { type: "object" },
+                    argumentsValue,
+                  ),
+                  issues: validationIssues,
                 };
                 if (config.identity && callId)
                   await config.identity.registry.diagnostic(callId, diagnostic);
@@ -857,11 +921,11 @@ export class OpenRouterDriver implements AgentDriver {
                     : "TOOL_UNAVAILABLE",
                 ...(error instanceof z.ZodError
                   ? {
-                      issues: error.issues.slice(0, 12).map((i) => ({
-                        path: i.path,
-                        code: i.code,
-                        message: i.message,
-                      })),
+                      issues: validationIssues,
+                      ...safeToolArgumentShape(
+                        tool?.parameters ?? { type: "object" },
+                        argumentsValue,
+                      ),
                     }
                   : {}),
                 instruction:
@@ -919,6 +983,7 @@ export class OpenRouterDriver implements AgentDriver {
           !successfulReadTools.has("research_sources")
         )
           throw new Error("PROVIDER_CANARY_READ_TOOL_REQUIRED");
+        validateMemoryCapacity(job, decision.actions);
         return { ...decision, costMicros: total };
       } catch (error) {
         const message =
@@ -933,17 +998,16 @@ export class OpenRouterDriver implements AgentDriver {
         });
         const issues =
           error instanceof z.ZodError
-            ? error.issues.slice(0, 12).map((i) => ({
-                path: i.path,
-                code: i.code,
-                message: i.message,
-              }))
+            ? safeValidationIssues(responseContract, error)
             : [];
+        const memoryCapacity =
+          error instanceof MemoryCapacityError ? error.quota : undefined;
         const diagnostic = {
           kind: "owner_output_rejected",
           code: message,
           finishReason: raw.choices?.[0]?.finish_reason,
           issues,
+          ...(memoryCapacity ? { memoryCapacity } : {}),
         };
         if (callId && config.identity)
           await config.identity.registry.diagnostic(callId, diagnostic);
@@ -958,6 +1022,7 @@ export class OpenRouterDriver implements AgentDriver {
             "PROVIDER_ACTION_PEER_FORBIDDEN",
             "PROVIDER_OUTPUT_INCOMPLETE",
             "PROVIDER_STRUCTURED_MEMORY_INVALID",
+            "PROVIDER_MEMORY_CAPACITY_EXCEEDED",
           ].includes(message)
         ) {
           messages.push({
@@ -966,8 +1031,9 @@ export class OpenRouterDriver implements AgentDriver {
               status: "decision_rejected",
               code: message,
               issues,
+              ...(memoryCapacity ? { memoryCapacity } : {}),
               instruction:
-                "No proposed actions were executed. Return a shorter complete JSON decision using only allowed action types and the supplied contract. Correct the validation errors. Include both actions and summary. A remember action uses exactly type (remember), key, and content; never add causalId. For owner_capability_needs_v1 remember content, encode an exact JSON object or array; owner/memory-readback content must encode the specified JSON proof object. Do not prefix either content string with JSON:, markdown fences, or commentary. Do not claim a rejected action succeeded.",
+                "No proposed actions were executed. If memory capacity failed, preserve existing knowledge and choose a smaller update to an existing key or omit your unnecessary new memory write; return the full corrected batch. Nothing is automatically dropped or partially committed. Memory version is returned metadata, not a writable field. Return a shorter complete JSON decision using only allowed action types and the supplied contract. Correct the validation errors. Include both actions and summary. A remember action uses exactly type (remember), key, and content; never add causalId. For owner_capability_needs_v1 remember content, encode an exact JSON object or array; owner/memory-readback content must encode the specified JSON proof object. Do not prefix either content string with JSON:, markdown fences, or commentary. Do not claim a rejected action succeeded.",
             }),
           });
           continue;
