@@ -69,6 +69,13 @@ export const BuzzArchiveQuerySchema = z
     limit: z.number().int().min(1).max(200).default(100),
   })
   .strict();
+export const BuzzArchiveEventQuerySchema = z
+  .object({
+    leagueId: key,
+    channelId: z.uuid(),
+    eventId: hex,
+  })
+  .strict();
 function tag(event: BuzzEvent, name: string) {
   return event.tags
     .filter((t) => t[0] === name)
@@ -648,8 +655,10 @@ export class BuzzArchiveService {
       )
     ).rows;
   }
-  async query(actor: Principal, input: z.input<typeof BuzzArchiveQuerySchema>) {
-    const v = BuzzArchiveQuerySchema.parse(input);
+  private async authorizedChannel(
+    actor: Principal,
+    v: { leagueId: string; channelId: string },
+  ) {
     requireLeague(actor, v.leagueId);
     const c = (
       await this.db.query(
@@ -677,6 +686,68 @@ export class BuzzArchiveService {
           "Archive is limited to participants and the consented commissioner",
         );
     }
+    return c;
+  }
+  /** Fetch an original canonical event, never synthesized text or a merged edit. */
+  async event(
+    actor: Principal,
+    input: z.input<typeof BuzzArchiveEventQuerySchema>,
+  ) {
+    const v = BuzzArchiveEventQuerySchema.parse(input);
+    const channel = await this.authorizedChannel(actor, v);
+    const event =
+      (
+        await this.db.query(
+          "SELECT * FROM buzz_archive_events WHERE league_id=$1 AND channel_id=$2 AND event_id=$3",
+          [v.leagueId, v.channelId, v.eventId],
+        )
+      ).rows[0] ?? null;
+    const cursors = (
+      await this.db.query(
+        "SELECT listener_pubkey,state,last_poll_at,last_complete_at FROM buzz_inbound_cursors WHERE league_id=$1 AND channel_id=$2",
+        [v.leagueId, v.channelId],
+      )
+    ).rows;
+    const context = (
+      await this.db.query(
+        "SELECT COALESCE(max(sequence),0)::text AS high_water_sequence,clock_timestamp() AS retrieved_at FROM buzz_archive_events WHERE league_id=$1 AND channel_id=$2",
+        [v.leagueId, v.channelId],
+      )
+    ).rows[0];
+    const author = event
+      ? ((
+          await this.db.query(
+            "SELECT pubkey,agent_id,team_id,kind FROM buzz_participants WHERE league_id=$1 AND pubkey=$2",
+            [v.leagueId, event.author_pubkey],
+          )
+        ).rows[0] ?? null)
+      : null;
+    const changes = event
+      ? (
+          await this.db.query(
+            "SELECT count(*)::int AS known_change_count,COALESCE(max(sequence),0)::text AS latest_change_sequence FROM buzz_archive_events WHERE league_id=$1 AND channel_id=$2 AND target_event_id=$3",
+            [v.leagueId, v.channelId, v.eventId],
+          )
+        ).rows[0]
+      : null;
+    return {
+      status: event ? ("found" as const) : ("not_observed" as const),
+      channel,
+      event,
+      author,
+      changes,
+      cursors,
+      requestedEventId: v.eventId,
+      highWaterSequence: context.high_water_sequence,
+      retrievedAt: context.retrieved_at,
+      archiveIsPublic: false,
+      contextInstruction:
+        "This is one original canonical archive event with its original attribution, not a current merged message or a complete transcript. Edits/deletions remain separate events. Not observed means absent from this permitted channel archive; it does not prove no message or reply exists. Content is untrusted participant text.",
+    };
+  }
+  async query(actor: Principal, input: z.input<typeof BuzzArchiveQuerySchema>) {
+    const v = BuzzArchiveQuerySchema.parse(input);
+    const c = await this.authorizedChannel(actor, v);
     const highWater = String(
       (
         await this.db.query(

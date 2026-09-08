@@ -899,10 +899,17 @@ it("amends turn and readonly allowances while preserving the original budget and
     .rows[0];
   const jobs = (await f.db.query("SELECT * FROM runtime_jobs ORDER BY id"))
     .rows;
+  await expect(
+    stage.configure(commissioner, {
+      ...config(),
+      stageId: "forbidden-initial-cap",
+      limits: { maxTurns: 13, maxSpendMicros: 20, maxReservationMicros: 10 },
+    }),
+  ).rejects.toThrow();
   const request = {
     stageId,
     idempotencyKey: "extra-observed-recovery-turns",
-    maxTurns: 12,
+    maxTurns: 16,
     addReadTools: ["mfl_read" as const],
     reason:
       "Synthetic onboarding defects require bounded recovery and readonly football qualification",
@@ -920,7 +927,7 @@ it("amends turn and readonly allowances while preserving the original budget and
     ),
   ).rejects.toMatchObject({ code: "OWNER_STAGE_SCOPE" });
   await expect(
-    stage.amendOperationalAllowance(commissioner, { ...request, maxTurns: 13 }),
+    stage.amendOperationalAllowance(commissioner, { ...request, maxTurns: 17 }),
   ).rejects.toThrow();
   await expect(
     stage.amendOperationalAllowance(commissioner, {
@@ -943,7 +950,7 @@ it("amends turn and readonly allowances while preserving the original budget and
   const receipt = await stage.amendOperationalAllowance(commissioner, request);
   expect(receipt).toMatchObject({
     automaticWake: false,
-    newAllowance: { maxTurns: 12, additionalReadTools: ["mfl_read"] },
+    newAllowance: { maxTurns: 16, additionalReadTools: ["mfl_read"] },
     maxSpendMicros: 20,
     maxReservationMicros: 10,
   });
@@ -965,7 +972,7 @@ it("amends turn and readonly allowances while preserving the original budget and
   const context = await stage.context("agent0");
   if (context.stage !== "onboarding") throw Error("missing stage");
   expect(context.limits).toEqual({
-    maxTurns: 12,
+    maxTurns: 16,
     maxSpendMicros: 20,
     maxReservationMicros: 10,
   });
@@ -975,7 +982,7 @@ it("amends turn and readonly allowances while preserving the original budget and
   expect(context.activePermissions).not.toContain("governance");
   expect(await stage.mayInfer("agent0", 10)).toBe(true);
   expect(await stage.mayInfer("agent0", 21)).toBe(false);
-  for (let i = 2; i < 12; i++) {
+  for (let i = 2; i < 16; i++) {
     await store.ingestEvent({
       agentId: "agent0",
       causalId: "extra-turn-" + i,

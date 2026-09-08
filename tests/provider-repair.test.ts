@@ -327,7 +327,7 @@ it("rejects malformed memory on the last call with observed cost and no hidden r
   });
   expect(x.requests).toHaveLength(1);
 });
-it("reserves the sixth call for a complete actions-and-summary decision with explicit final instruction", async () => {
+it("closes tools before the fifth call and repairs an ignored decision boundary on the sixth", async () => {
   let reads = 0;
   const choices = Array.from({ length: 5 }, (_, i) => ({
     finish_reason: "tool_calls",
@@ -355,7 +355,11 @@ it("reserves the sixth call for a complete actions-and-summary decision with exp
     ],
   });
   expect((await x.driver.run(job)).costMicros).toBe(6000);
-  expect(reads).toBe(5);
+  expect(reads).toBe(4);
+  expect(x.requests[4]).not.toHaveProperty("tools");
+  expect(x.requests[4].messages[0].content).toContain(
+    "read-tool phase is now closed",
+  );
   expect(x.requests[5]).not.toHaveProperty("tools");
   expect(x.requests[5].response_format).toEqual({ type: "json_object" });
   expect(x.requests[5].messages[0].content).toContain(
@@ -367,6 +371,81 @@ it("reserves the sixth call for a complete actions-and-summary decision with exp
     "Do not add causalId or other fields to remember",
   );
   expect(x.requests).toHaveLength(6);
+});
+
+it("reserves a last-call format repair after four reads without stripping memory metadata or increasing the cap", async () => {
+  let reads = 0;
+  const choices = Array.from({ length: 4 }, (_, i) => ({
+    finish_reason: "tool_calls",
+    message: {
+      tool_calls: [
+        {
+          id: `read-${i}`,
+          type: "function",
+          function: { name: "read", arguments: "{}" },
+        },
+      ],
+    },
+  }));
+  const invalid = {
+    finish_reason: "stop",
+    message: {
+      content: JSON.stringify({
+        actions: [
+          {
+            type: "remember",
+            key: "followup",
+            content: "Actual observed result",
+            version: 2,
+          },
+        ],
+        summary: "Invalid action metadata",
+      }),
+    },
+  };
+  const corrected = {
+    finish_reason: "stop",
+    message: {
+      content: JSON.stringify({
+        actions: [
+          {
+            type: "remember",
+            key: "followup",
+            content: "Actual observed result",
+          },
+        ],
+        summary: "Corrected by the model",
+      }),
+    },
+  };
+  const x = setup([...choices, invalid, corrected], {
+    readTools: [
+      {
+        name: "read",
+        description: "Synthetic",
+        parameters: { type: "object" },
+        execute: async () => {
+          reads++;
+          return {};
+        },
+      },
+    ],
+  });
+  const result = await x.driver.run(job);
+  expect(result).toMatchObject({
+    costMicros: 6000,
+    actions: [
+      { type: "remember", key: "followup", content: "Actual observed result" },
+    ],
+  });
+  expect(reads).toBe(4);
+  expect(x.requests).toHaveLength(6);
+  expect(x.requests[4].tools).toBeUndefined();
+  expect(x.requests[5].tools).toBeUndefined();
+  expect(x.requests[5].messages.at(-1).content).toContain("version");
+  expect(x.requests[5].messages.at(-1).content).toContain(
+    "No proposed actions were executed",
+  );
 });
 
 it("intersects rehearsal and onboarding permissions without allowing either scope to widen the other", async () => {

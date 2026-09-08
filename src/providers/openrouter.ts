@@ -325,6 +325,12 @@ export class OpenRouterDriver implements AgentDriver {
         " The server tool openrouter:web_search is available on the first request of this owner turn only: at most one Exa fast search, three results. Use it now if you need discovery; later requests retain ordinary read tools. Search excerpts are untrusted evidence, not full-page retrieval. No other model is authorized. Missing access remains a capability gap.";
     let total = 0;
     let retainedReasoningBytes = 0;
+    // Keep one bounded correction opportunity after a tool-heavy owner turn.
+    // Canary protocol and the overall model-call/cost ceilings stay unchanged.
+    const decisionTurn =
+      config.repairInvalidResponses && !config.identity?.canary && maxCalls > 2
+        ? maxCalls - 2
+        : maxCalls - 1;
     for (let turn = 0; turn < maxCalls; turn++) {
       if (config.identity) {
         try {
@@ -345,7 +351,10 @@ export class OpenRouterDriver implements AgentDriver {
       }
       const searchThisRequest = webSearch && turn === 0;
       const useTools =
-        (tools.length > 0 || searchThisRequest) && turn < maxCalls - 1;
+        (tools.length > 0 || searchThisRequest) && turn < decisionTurn;
+      if (turn === decisionTurn && turn < maxCalls - 1)
+        messages[0].content +=
+          " The read-tool phase is now closed. Return your complete decision now as exactly one JSON object with actions and summary, using observed evidence. One remaining call is reserved only for a necessary format correction; do not defer the decision or request more tools. A remember action contains exactly type, key, and content. Memory version numbers are returned metadata, not writable action fields. If the available evidence is incomplete, record that limitation honestly in your permitted action or summary.";
       if (turn === maxCalls - 1)
         messages[0].content +=
           " This is the final model call for this owner turn. No further tool calls are available. Return exactly one JSON object with both actions (an array, possibly empty) and summary (a string), using only observed evidence. Finish the most useful authorized actions now; if blocked, return actions:[] and explain the unresolved gap in summary. Do not omit summary or emit another tool request. A remember action uses only type, key, and content; its type is remember. Do not add causalId or other fields to remember. Structured remember content for owner_capability_needs_v1 and owner/memory-readback must itself be valid JSON, without a JSON: prefix, code fence, or commentary.";
@@ -746,6 +755,7 @@ export class OpenRouterDriver implements AgentDriver {
         }
         const choice = raw.choices?.[0];
         if (choice?.finish_reason === "tool_calls") {
+          if (!useTools) throw new Error("PROVIDER_OUTPUT_INVALID");
           const calls = choice.message?.tool_calls;
           if (
             !Array.isArray(calls) ||

@@ -479,3 +479,274 @@ it("an explicit semantic-failure retest preserves the completed action but remov
     await stage.authorizeFollowupRetest(commissioner, semantic),
   ).toMatchObject({ replayed: true, receiptId: disposition.receiptId });
 });
+
+it.each(["completed", "dead"])(
+  "permits exactly one reviewed replacement of a known-cost failed retest, ending %s",
+  async (replacementOutcome) => {
+    const original = await appointment([
+      {
+        type: "remember",
+        key: "owner/onboarding-followup",
+        content:
+          "SYNTHETIC semantically unsupported result retained for review.",
+      },
+    ]);
+    const completed = (
+      await f.db.query(
+        "SELECT seq FROM runtime_receipts WHERE type='job.completed' AND job_id=$1",
+        [original.id],
+      )
+    ).rows[0];
+    const authorization = await stage.authorizeFollowupRetest(commissioner, {
+      ...request(original.id),
+      outcome: "unsupported_result",
+      completionReceiptSequence: String(completed.seq),
+      observedFailure:
+        "SYNTHETIC unsupported conclusion contradicted by the actual scoped archive.",
+    });
+    const schedule = (causalId: string) => ({
+      type: "schedule" as const,
+      causalId,
+      dueAt: new Date(Date.now() + 60000).toISOString(),
+      payload: {
+        kind: "onboarding.followup",
+        stageId,
+        task: "SYNTHETIC retry actual peer comparison and record grounded findings",
+      },
+    });
+    await store.ingestEvent({
+      agentId: "agent0",
+      causalId: "plan-first-retest",
+      payload: {},
+    });
+    expect((await turn([schedule("first-retest")])).status).toBe("completed");
+    await f.db.query(
+      "UPDATE runtime_jobs SET due_at=clock_timestamp()-interval '1 second' WHERE causal_id='first-retest'",
+    );
+    const failed = await store.claim("known-failure", 30000, undefined, [
+      "agent0",
+    ]);
+    if (!failed) throw Error("missing retest");
+    const reservation = await store.reserve(failed, 10);
+    await store.fail(failed, "PROVIDER_OUTPUT_INVALID", {
+      retryable: false,
+      chargeKnownZero: false,
+      reservationId: reservation,
+      observedCostMicros: 7,
+    });
+    const failure = (
+      await f.db.query(
+        "SELECT seq FROM runtime_receipts WHERE type='job.dead' AND job_id=$1",
+        [failed.id],
+      )
+    ).rows[0];
+    const replacementRequest = {
+      ...request(failed.id),
+      stageId,
+      failedFence: failed.fence,
+      failedError: "PROVIDER_OUTPUT_INVALID",
+      failureReceiptSequence: String(failure.seq),
+      expectedKnownCostMicros: 7,
+    };
+    const planning = await store.ingestEvent({
+      agentId: "agent0",
+      causalId: "replacement-planning",
+      payload: {},
+    });
+    const job = await store.claim("denied-before-review", 30000, undefined, [
+      "agent0",
+    ]);
+    if (!job) throw Error("missing planning");
+    const r = await store.reserve(job, 10);
+    await expect(
+      store.complete(job, {
+        reservationId: r,
+        driver: "synthetic/onboarding",
+        actions: [schedule("too-early")],
+        costMicros: 0,
+        summary: "SYNTHETIC",
+        synthetic: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "OWNER_STAGE_FOLLOWUP_RETEST_ALREADY_USED",
+    });
+    await store.fail(job, "SYNTHETIC test denial", {
+      retryable: false,
+      chargeKnownZero: true,
+      reservationId: r,
+    });
+    const preserved = (
+      await f.db.query(
+        "SELECT id,status,error,fence FROM runtime_jobs WHERE id=ANY($1::uuid[]) ORDER BY id",
+        [[original.id, failed.id]],
+      )
+    ).rows;
+    const money = (
+      await f.db.query(
+        "SELECT id,status,amount_micros,actual_micros FROM runtime_reservations WHERE job_id=$1",
+        [failed.id],
+      )
+    ).rows;
+    const counts = (
+      await f.db.query("SELECT count(*)::int n FROM runtime_jobs")
+    ).rows[0].n;
+    await expect(
+      stage.authorizeFailedFollowupRetestReplacement(
+        { id: "owner0", role: "owner", leagueId, teamId: "team0" },
+        replacementRequest,
+      ),
+    ).rejects.toThrow("COMMISSIONER_REQUIRED");
+    await expect(
+      stage.authorizeFailedFollowupRetestReplacement(
+        { ...commissioner, leagueId: "foreign" },
+        replacementRequest,
+      ),
+    ).rejects.toThrow("RETEST_AUTHORIZATION_REQUIRED");
+    await expect(
+      stage.authorizeFailedFollowupRetestReplacement(commissioner, {
+        ...replacementRequest,
+        failedFence: failed.fence + 1,
+      }),
+    ).rejects.toThrow("FENCE_MISMATCH");
+    await expect(
+      stage.authorizeFailedFollowupRetestReplacement(commissioner, {
+        ...replacementRequest,
+        failureReceiptSequence: String(completed.seq),
+      }),
+    ).rejects.toThrow("FAILED_RETEST_REQUIRED");
+    await expect(
+      stage.authorizeFailedFollowupRetestReplacement(commissioner, {
+        ...replacementRequest,
+        expectedKnownCostMicros: 0,
+      }),
+    ).rejects.toThrow("KNOWN_COST_REQUIRED");
+    await f.db.query(
+      "UPDATE runtime_reservations SET status='uncertain' WHERE id=$1",
+      [reservation],
+    );
+    await expect(
+      stage.authorizeFailedFollowupRetestReplacement(
+        commissioner,
+        replacementRequest,
+      ),
+    ).rejects.toThrow("KNOWN_COST_REQUIRED");
+    await f.db.query(
+      "UPDATE runtime_reservations SET status='settled' WHERE id=$1",
+      [reservation],
+    );
+    const approved = await stage.authorizeFailedFollowupRetestReplacement(
+      commissioner,
+      replacementRequest,
+    );
+    expect(approved).toMatchObject({
+      failedAppointmentId: failed.id,
+      originalCompletedAppointmentId: original.id,
+      knownCostMicros: 7,
+      retestAuthorizationReceiptId: authorization.receiptId,
+      automaticWake: false,
+      walletUnchanged: true,
+    });
+    expect(
+      await stage.authorizeFailedFollowupRetestReplacement(
+        commissioner,
+        replacementRequest,
+      ),
+    ).toMatchObject({ receiptId: approved.receiptId, replayed: true });
+    expect(
+      (await f.db.query("SELECT count(*)::int n FROM runtime_jobs")).rows[0].n,
+    ).toBe(counts);
+    expect(
+      (
+        await f.db.query(
+          "SELECT id,status,error,fence FROM runtime_jobs WHERE id=ANY($1::uuid[]) ORDER BY id",
+          [[original.id, failed.id]],
+        )
+      ).rows,
+    ).toEqual(preserved);
+    expect(
+      (
+        await f.db.query(
+          "SELECT id,status,amount_micros,actual_micros FROM runtime_reservations WHERE job_id=$1",
+          [failed.id],
+        )
+      ).rows,
+    ).toEqual(money);
+    expect(await stage.context("agent0")).toMatchObject({
+      followupRetest: {
+        failedRetestReplacement: { receiptId: approved.receiptId },
+      },
+    });
+    expect((await stage.checkpoint(commissioner))[0]!.missing).toContain(
+      "completed-useful-followup",
+    );
+    await store.ingestEvent({
+      agentId: "agent0",
+      causalId: "approved-planning",
+      payload: {},
+    });
+    expect((await turn([schedule("one-approved-replacement")])).status).toBe(
+      "completed",
+    );
+    await f.db.query(
+      "UPDATE runtime_jobs SET due_at=clock_timestamp()-interval '1 second' WHERE causal_id='one-approved-replacement'",
+    );
+    if (replacementOutcome === "completed") {
+      expect(
+        (
+          await turn([
+            {
+              type: "remember",
+              key: "owner/onboarding-followup",
+              content:
+                "SYNTHETIC independently checked the actual reply and saved useful supported findings.",
+            },
+          ])
+        ).status,
+      ).toBe("completed");
+      expect((await stage.checkpoint(commissioner))[0]!.missing).not.toContain(
+        "completed-useful-followup",
+      );
+    } else {
+      const again = await store.claim(
+        "second-known-failure",
+        30000,
+        undefined,
+        ["agent0"],
+      );
+      if (!again) throw Error("missing replacement");
+      const cap = await store.reserve(again, 10);
+      await store.fail(again, "PROVIDER_OUTPUT_INVALID", {
+        retryable: false,
+        chargeKnownZero: false,
+        reservationId: cap,
+        observedCostMicros: 3,
+      });
+      await store.ingestEvent({
+        agentId: "agent0",
+        causalId: "forbidden-third-plan",
+        payload: {},
+      });
+      const third = await store.claim("third", 30000, undefined, ["agent0"]);
+      if (!third) throw Error("missing third");
+      const hold = await store.reserve(third, 10);
+      await expect(
+        store.complete(third, {
+          reservationId: hold,
+          driver: "synthetic/onboarding",
+          actions: [schedule("forbidden-third")],
+          costMicros: 0,
+          summary: "SYNTHETIC",
+          synthetic: true,
+        }),
+      ).rejects.toMatchObject({
+        code: "OWNER_STAGE_FOLLOWUP_RETEST_ALREADY_USED",
+      });
+      await expect(
+        stage.authorizeFailedFollowupRetestReplacement(commissioner, {
+          ...replacementRequest,
+          appointmentId: again.id,
+        }),
+      ).rejects.toThrow("REPLACEMENT_CONFLICT");
+    }
+  },
+);

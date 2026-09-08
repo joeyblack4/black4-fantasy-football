@@ -477,7 +477,10 @@ it("rejects a fabricated future cursor and distinguishes partial pages from no r
     memberPubkeys: pubkeys.slice(0, 2),
     events: [
       event("first", { created_at: firstTime }),
-      event("real peer response", { pubkey: pubkeys[1], created_at: firstTime + 1 }),
+      event("real peer response", {
+        pubkey: pubkeys[1],
+        created_at: firstTime + 1,
+      }),
     ],
     complete: true,
   });
@@ -520,4 +523,90 @@ it("rejects a fabricated future cursor and distinguishes partial pages from no r
       afterSequence: "89400",
     }),
   ).rejects.toMatchObject({ code: "BUZZ_ARCHIVE_FORBIDDEN" });
+});
+
+it("event lookup returns only the exact original with attribution and separate change metadata", async () => {
+  const original = event("original owner message");
+  const edit = event("later edit", {
+    kind: 40003,
+    tags: [
+      ["h", room],
+      ["e", original.id],
+    ],
+  });
+  await service.ingestBatch(listener(), {
+    channelId: room,
+    memberPubkeys: pubkeys.slice(0, 2),
+    events: [original, edit],
+    complete: true,
+  });
+  const result = await service.event(owner(1), {
+    leagueId,
+    channelId: room,
+    eventId: original.id,
+  });
+  expect(result.status).toBe("found");
+  expect(result.event).toMatchObject({
+    event_id: original.id,
+    content: original.content,
+    author_pubkey: original.pubkey,
+    mode: "mock",
+    provenance: "synthetic fixture",
+  });
+  expect(result.author).toEqual({
+    pubkey: original.pubkey,
+    agent_id: "agent-0",
+    team_id: "team-0",
+    kind: "agent",
+  });
+  expect(result.changes.known_change_count).toBe(1);
+  expect(result.event.sequence).toMatch(/^\d+$/);
+  expect(result.cursors[0].state).toBe("healthy");
+  expect(result.archiveIsPublic).toBe(false);
+  expect(JSON.stringify(result)).not.toContain(edit.content);
+  await expect(
+    service.event(owner(3), {
+      leagueId,
+      channelId: room,
+      eventId: original.id,
+    }),
+  ).rejects.toThrow("Archive is limited");
+  await expect(
+    service.event(
+      { ...owner(1), leagueId: "another-league" },
+      { leagueId, channelId: room, eventId: original.id },
+    ),
+  ).rejects.toThrow();
+});
+
+it("event lookup cannot reveal an event through a different authorized channel or unknown ID", async () => {
+  const original = event("private original");
+  await service.ingestBatch(listener(), {
+    channelId: room,
+    memberPubkeys: pubkeys.slice(0, 2),
+    events: [original],
+    complete: true,
+  });
+  await service.registerChannel(commissioner, {
+    leagueId,
+    channelId: humanRoom,
+    memberPubkeys: pubkeys.slice(0, 3),
+    receiptId: "synthetic-other-channel",
+  });
+  for (const input of [
+    { channelId: humanRoom, eventId: original.id },
+    { channelId: room, eventId: "f".repeat(64) },
+  ]) {
+    const result = await service.event(owner(1), { leagueId, ...input });
+    expect(result).toMatchObject({
+      status: "not_observed",
+      event: null,
+      author: null,
+      changes: null,
+    });
+    expect(JSON.stringify(result)).not.toContain(original.content);
+  }
+  await expect(
+    service.event(owner(1), { leagueId, channelId: room, eventId: "123" }),
+  ).rejects.toThrow();
 });

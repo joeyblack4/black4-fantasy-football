@@ -325,3 +325,51 @@ it("initial context exposes scoped private channels without leaking absent membe
     channels: [],
   });
 });
+
+it("direct event tool uses the current owner lease and returns a bounded oversized-original receipt", async () => {
+  await setupChannel();
+  const original = event("SYNTHETIC exact peer message", pubkeys[1]);
+  const oversized = event("SYNTHETIC " + "é".repeat(15000), pubkeys[1]);
+  oversized.tags = [["h", room]]; // Archive-only fixture; no oversized runtime wake payload.
+  oversized.id = nostrEventId(oversized);
+  await archive.ingestBatch(listener, {
+    channelId: room,
+    memberPubkeys: pubkeys,
+    events: [original, oversized],
+    complete: true,
+  });
+  const job = (await store.claim("event-reader"))!;
+  expect(job.agentId).toBe("agent-0");
+  const tool = createBuzzChannelReadTools(f.db)[0]!;
+  const result = (await tool.execute(job, {
+    type: "event",
+    channelId: room,
+    eventId: original.id,
+  })) as any;
+  expect(result).toMatchObject({
+    status: "found",
+    event: { content: original.content, event_id: original.id },
+    author: { agent_id: "agent-1" },
+  });
+  const large = (await tool.execute(job, {
+    type: "event",
+    channelId: room,
+    eventId: oversized.id,
+  })) as any;
+  expect(large.status).toBe("tooLarge");
+  expect(large.event.event_id).toBe(oversized.id);
+  expect(large.event.content).toBeUndefined();
+  expect(large.event.tags).toBeUndefined();
+  expect(large.contentReturned).toBe(false);
+  expect(large.originalContentBytes).toBe(Buffer.byteLength(oversized.content));
+  expect(Buffer.byteLength(JSON.stringify(large))).toBeLessThan(24000);
+  await expect(
+    tool.execute(job, { type: "event", channelId: room }),
+  ).rejects.toThrow();
+  await f.db.query("UPDATE runtime_jobs SET fence=fence+1 WHERE id=$1", [
+    job.id,
+  ]);
+  await expect(
+    tool.execute(job, { type: "event", channelId: room, eventId: original.id }),
+  ).rejects.toThrow("BUZZ_READ_JOB_AUTHORITY_EXPIRED");
+});

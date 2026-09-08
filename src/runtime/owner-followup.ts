@@ -42,14 +42,24 @@ export async function followupRetestAuthorization(
   stageId: string,
   agentId: string,
 ) {
-  return (
+  const original =
     (
       await db.query(
         "SELECT details FROM runtime_receipts WHERE type='owner_stage.followup_retest_authorized' AND agent_id=$1 AND details->>'leagueId'=$2 AND details->>'stageId'=$3 ORDER BY seq DESC LIMIT 1",
         [agentId, leagueId, stageId],
       )
-    ).rows[0]?.details ?? null
-  );
+    ).rows[0]?.details ?? null;
+  if (!original) return null;
+  const replacement = (
+    await db.query(
+      "SELECT details FROM runtime_receipts WHERE type='owner_stage.followup_retest_replacement_authorized' AND agent_id=$1 AND details->>'leagueId'=$2 AND details->>'stageId'=$3 AND details->>'retestAuthorizationReceiptId'=$4 ORDER BY seq DESC LIMIT 1",
+      [agentId, leagueId, stageId, original.receiptId],
+    )
+  ).rows[0]?.details;
+  return {
+    ...original,
+    ...(replacement ? { failedRetestReplacement: replacement } : {}),
+  };
 }
 
 export async function followupCompletionEvidence(
@@ -247,6 +257,157 @@ export class OwnerFollowupRecovery {
       };
       await tx.query(
         "INSERT INTO runtime_receipts(type,agent_id,job_id,details) VALUES('owner_stage.followup_retest_authorized',$1,$2,$3)",
+        [request.agentId, request.appointmentId, details],
+      );
+      return { ...details, replayed: false };
+    });
+  }
+  /** One operator-reviewed recovery of a failed retest, without a wake or cost waiver. */
+  async authorizeFailedFollowupRetestReplacement(
+    actor: Actor,
+    input: {
+      agentId: string;
+      stageId: string;
+      appointmentId: string;
+      failedFence: number;
+      failedError: string;
+      failureReceiptSequence: string;
+      expectedKnownCostMicros: number;
+      reason: string;
+      evidenceRef: string;
+    },
+  ) {
+    check(
+      actor.role === "commissioner" && actor.leagueId,
+      "OWNER_STAGE_COMMISSIONER_REQUIRED",
+    );
+    const request = Request.extend({
+      stageId: z.string().min(1).max(120),
+      failedFence: z.number().int().positive(),
+      failedError: z.string().min(1).max(1000),
+      failureReceiptSequence: z.string().regex(/^[1-9][0-9]*$/),
+      expectedKnownCostMicros: z.number().int().nonnegative().safe(),
+    })
+      .strict()
+      .parse(input);
+    return transaction(this.db, async (tx) => {
+      await tx.query("SELECT id FROM runtime_agents WHERE id=$1 FOR UPDATE", [
+        request.agentId,
+      ]);
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,7044))",
+        [actor.leagueId],
+      );
+      const original = await followupRetestAuthorization(
+        tx,
+        actor.leagueId,
+        request.stageId,
+        request.agentId,
+      );
+      check(original, "OWNER_STAGE_RETEST_AUTHORIZATION_REQUIRED");
+      const requestHash = fingerprint(request);
+      if (original.failedRetestReplacement) {
+        check(
+          original.failedRetestReplacement.requestHash === requestHash,
+          "OWNER_STAGE_RETEST_REPLACEMENT_CONFLICT",
+        );
+        return { ...original.failedRetestReplacement, replayed: true };
+      }
+      const row = (
+        await tx.query(
+          `SELECT j.*,s.status AS stage_status,r.id AS reservation_id,r.status AS cost_status,r.actual_micros,r.observed_micros,c.details AS failure_details,c.seq AS failure_seq
+        FROM runtime_jobs j JOIN runtime_bindings b ON b.agent_id=j.agent_id
+        JOIN runtime_owner_stages s ON s.league_id=b.league_id AND s.id=$3
+        JOIN runtime_owner_stage_turns t ON t.job_id=j.id AND t.fence=j.fence AND t.agent_id=j.agent_id AND t.league_id=s.league_id AND t.stage_id=s.id
+        JOIN runtime_reservations r ON r.job_id=j.id AND r.fence=j.fence AND r.agent_id=j.agent_id
+        JOIN runtime_receipts c ON c.job_id=j.id AND c.agent_id=j.agent_id AND c.type='job.dead' AND c.seq=$4 AND c.created_at>=j.claimed_at
+          AND c.seq=(SELECT max(d.seq) FROM runtime_receipts d WHERE d.type='job.dead' AND d.job_id=j.id AND d.agent_id=j.agent_id)
+        WHERE j.agent_id=$1 AND j.id=$2 AND b.league_id=$5
+          AND s.id=(SELECT id FROM runtime_owner_stages WHERE league_id=b.league_id ORDER BY configured_at DESC,id DESC LIMIT 1)`,
+          [
+            request.agentId,
+            request.appointmentId,
+            request.stageId,
+            request.failureReceiptSequence,
+            actor.leagueId,
+          ],
+        )
+      ).rows[0];
+      check(
+        row &&
+          ["active", "paused"].includes(row.stage_status) &&
+          row.status === "dead" &&
+          row.kind === "appointment" &&
+          row.payload.kind === "onboarding.followup" &&
+          row.payload.stageId === request.stageId,
+        "OWNER_STAGE_FAILED_RETEST_REQUIRED",
+      );
+      check(
+        row.fence === request.failedFence &&
+          row.error === request.failedError &&
+          row.failure_details.error === request.failedError,
+        "OWNER_STAGE_FAILED_RETEST_FENCE_MISMATCH",
+      );
+      check(
+        row.cost_status === "settled" &&
+          row.actual_micros !== null &&
+          Number(row.actual_micros) === request.expectedKnownCostMicros &&
+          row.failure_details.observedCostMicros ===
+            request.expectedKnownCostMicros,
+        "OWNER_STAGE_FAILED_RETEST_KNOWN_COST_REQUIRED",
+      );
+      const authored = (
+        await tx.query(
+          "SELECT details FROM runtime_receipts WHERE type='owner_stage.schedule_authored' AND agent_id=$1 AND details->>'stageId'=$2 AND details->>'retestAuthorizationReceiptId'=$3 ORDER BY seq",
+          [request.agentId, request.stageId, original.receiptId],
+        )
+      ).rows;
+      check(
+        authored.length === 1 &&
+          authored[0].details.appointmentId === request.appointmentId,
+        "OWNER_STAGE_EXACT_USED_RETEST_REQUIRED",
+      );
+      check(
+        !(
+          await tx.query(
+            "SELECT 1 FROM runtime_jobs j WHERE j.agent_id=$1 AND (j.status='running' OR (j.status='pending' AND j.kind='appointment' AND j.payload->>'stageId'=$2))",
+            [request.agentId, request.stageId],
+          )
+        ).rowCount,
+        "OWNER_STAGE_FOLLOWUP_IN_FLIGHT",
+      );
+      check(
+        !(
+          await tx.query(
+            "SELECT 1 FROM runtime_owner_stage_reviews WHERE league_id=$1 AND stage_id=$2 AND agent_id=$3",
+            [actor.leagueId, request.stageId, request.agentId],
+          )
+        ).rowCount,
+        "OWNER_STAGE_ALREADY_REVIEWED",
+      );
+      const details = {
+        receiptId: randomUUID(),
+        leagueId: actor.leagueId,
+        stageId: request.stageId,
+        agentId: request.agentId,
+        retestAuthorizationReceiptId: original.receiptId,
+        originalCompletedAppointmentId: original.priorAppointmentId,
+        failedAppointmentId: request.appointmentId,
+        failedFence: row.fence,
+        failedError: row.error,
+        failureReceiptSequence: String(row.failure_seq),
+        reservationId: row.reservation_id,
+        knownCostMicros: Number(row.actual_micros),
+        requestHash,
+        reason: request.reason,
+        evidenceRef: request.evidenceRef,
+        reviewedBy: actor.id,
+        automaticWake: false,
+        walletUnchanged: true,
+        disposition: "permit-one-replacement-of-exact-failed-retest",
+      };
+      await tx.query(
+        "INSERT INTO runtime_receipts(type,agent_id,job_id,details) VALUES('owner_stage.followup_retest_replacement_authorized',$1,$2,$3)",
         [request.agentId, request.appointmentId, details],
       );
       return { ...details, replayed: false };

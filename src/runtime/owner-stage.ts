@@ -284,8 +284,24 @@ export async function recordOwnerStageSchedule(
     const usedRetest = history.find(
       (r) => r.details.retestAuthorizationReceiptId === retest.receiptId,
     );
+    const replacement = retest.failedRetestReplacement;
+    const usedReplacement =
+      replacement &&
+      history.find(
+        (r) =>
+          r.details.retestReplacementAuthorizationReceiptId ===
+          replacement.receiptId,
+      );
+    const exactFailedRecovery =
+      replacement &&
+      usedRetest?.status === "dead" &&
+      usedRetest.details.appointmentId === replacement.failedAppointmentId &&
+      (!usedReplacement ||
+        usedReplacement.details.appointmentId === appointment.id);
     check(
-      !usedRetest || usedRetest.details.appointmentId === appointment.id,
+      !usedRetest ||
+        usedRetest.details.appointmentId === appointment.id ||
+        exactFailedRecovery,
       "OWNER_STAGE_FOLLOWUP_RETEST_ALREADY_USED",
     );
   }
@@ -321,6 +337,12 @@ export async function recordOwnerStageSchedule(
             ? {
                 retestAuthorizationReceiptId: retest.receiptId,
                 retestsCompletedAppointmentId: retest.priorAppointmentId,
+                ...(retest.failedRetestReplacement
+                  ? {
+                      retestReplacementAuthorizationReceiptId:
+                        retest.failedRetestReplacement.receiptId,
+                    }
+                  : {}),
               }
             : {}),
           dueAt: action.dueAt,
@@ -761,7 +783,7 @@ export class OwnerStageRuntime {
       .object({
         stageId: Identifier,
         idempotencyKey: Identifier,
-        maxTurns: z.number().int().min(2).max(12).optional(),
+        maxTurns: z.number().int().min(2).max(16).optional(),
         addReadTools: z.array(z.literal("mfl_read")).max(1).default([]),
         reason: z.string().trim().min(10).max(4000),
       })
@@ -1205,7 +1227,7 @@ export class OwnerStageRuntime {
         followup: appointments.rows[0] ?? null,
         introduction: introductions.rows[0] ?? null,
         instruction:
-          "If followup exists, inspect its status before scheduling: pending/running means await or perform it. Completed appointments normally occupy the slot. Only an explicit followupRetest receipt permits one NEW owner-chosen appointment after the named completed attempt that the operator reviewed as unsuccessful; preserve the old attempt and do not call it successful. Dead appointments permit replacement under the existing limit. The replacement appointment itself must emit remember owner/onboarding-followup after doing useful work; a later retrospective note cannot qualify. If introduction exists, its causalId and content are immutable: do not emit another introduction or reuse that key with different text. Read its receipt/archive; use a fresh causalId only for a genuinely new peer response. Accepted sends require canonical observation.",
+          "If followup exists, inspect its status before scheduling: pending/running means await or perform it. Completed appointments normally occupy the slot. Only an explicit followupRetest receipt permits one NEW owner-chosen appointment after the named completed attempt that the operator reviewed as unsuccessful; preserve the old attempt and do not call it successful. A dead first followup may be replaced under the existing limit. A dead retest cannot be repeated unless followupRetest.failedRetestReplacement explicitly names it; that additional receipt permits only one fresh owner-chosen replacement, preserving every failed attempt and cost. The replacement appointment itself must emit remember owner/onboarding-followup after doing useful work; a later retrospective note cannot qualify. If introduction exists, its causalId and content are immutable: do not emit another introduction or reuse that key with different text. Read its receipt/archive; use a fresh causalId only for a genuinely new peer response. Accepted sends require canonical observation.",
       },
       requiredMemoryKeys: [
         "owner_operating_packet_v1",
@@ -1502,6 +1524,16 @@ export class OwnerStageRuntime {
       actor,
       input,
     );
+  }
+  async authorizeFailedFollowupRetestReplacement(
+    actor: Actor,
+    input: Parameters<
+      OwnerFollowupRecovery["authorizeFailedFollowupRetestReplacement"]
+    >[1],
+  ) {
+    return new OwnerFollowupRecovery(
+      this.db,
+    ).authorizeFailedFollowupRetestReplacement(actor, input);
   }
   async attestLegacyFollowup(
     actor: Actor,
