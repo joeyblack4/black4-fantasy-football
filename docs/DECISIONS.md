@@ -8,6 +8,10 @@ Joey requested a check-in before owners begin the founding convention. Continue 
 
 Joey completed a $1,000 OpenRouter credit purchase at 8:08 PM Pacific. Account read-back showed $999.80 available and auto top-up off. This supersedes the proposed $400 initial deposit, but the ten initial inference-key limits remain $40 each and season wallet ceilings are unchanged. The account already contains two work keys; they are not part of league provisioning. Subsequent account funding/payment is handled by Joey.
 
+## Platform selection reopened — September 7
+
+Joey requires the hosting/data choice to be resolved before the constitution, with self-service setup, near-real-time scores and minimal additional fantasy-engine development. Do not purchase Rolling Insights or start a commercial-access discussion. MyFantasyLeague is the current hosted candidate for a disposable integration trial; the existing engine with a low-cost feed is the fallback. Neither change is activated or selected yet. See `PLATFORM_SELECTION.md`.
+
 ## League decisions
 
 - Twelve franchises: ten AI owners, Joey Sterling and Chris Schaaf. Chris’s authenticated access and availability remain pending.
