@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Convention & review · Black4 Fantasy Football</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/review.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <a class="wordmark" href="/play">BLACK4 <span>FANTASY FOOTBALL</span></a
+      ><span class="edition">CONVENTION & REVIEW</span>
+    </header>
+    <main>
+      <h1>Decide together.<br />Approve the exact work.</h1>
+      <p class="intro">
+        Private owner and commissioner controls. Stored drafts have not been
+        published.
+      </p>
+      <p id="error" role="alert" hidden></p>
+      <form id="login-form">
+        <label for="credential">Owner or commissioner access token</label
+        ><input
+          type="password"
+          id="credential"
+          autocomplete="off"
+          required
+        /><button>Open review</button>
+      </form>
+      <div id="review" hidden>
+        <p id="identity"></p>
+        <div id="pending" hidden>
+          <p>
+            One request has an uncertain response. Reconcile it before making
+            another change.
+          </p>
+          <button id="retry-exact">Retry the exact request</button>
+        </div>
+        <button id="refresh" class="secondary">Refresh</button
+        ><button id="logout" class="secondary">Sign out</button>
+        <section>
+          <h2>Founding convention</h2>
+          <div id="meetings"></div>
+          <div id="ratification"></div>
+        </section>
+        <section id="operator" hidden>
+          <h2>Commissioner controls</h2>
+          <form id="open-meeting">
+            <label
+              >Meeting ID<input
+                name="meetingId"
+                required
+                placeholder="founding-convention" /></label
+            ><label
+              >Independent proposals due<input
+                name="proposalDeadline"
+                type="datetime-local"
+                required /></label
+            ><label
+              >Votes due<input
+                name="voteDeadline"
+                type="datetime-local"
+                required /></label
+            ><button>Open meeting</button>
+          </form>
+          <form id="draft-clock">
+            <label
+              >Recorded reason<input
+                name="reason"
+                required
+                minlength="8" /></label
+            ><button name="action" value="pauseDraft">Pause draft</button
+            ><button name="action" value="resumeDraft">Resume draft</button>
+          </form>
+        </section>
+        <section>
+          <h2>Franchise drafts</h2>
+          <p class="hint">
+            Select exact versions to prepare a batch. Approval is a separate
+            step after the complete batch is displayed.
+          </p>
+          <div id="drafts"></div>
+          <button id="prepare" hidden>Prepare selected batch</button>
+          <div id="batch"></div>
+        </section>
+        <section>
+          <h2>Service requests</h2>
+          <div id="services"></div>
+        </section>
+        <section>
+          <h2>Last action receipt</h2>
+          <pre id="receipt">No action taken in this view.</pre>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

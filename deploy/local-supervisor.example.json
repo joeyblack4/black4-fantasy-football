@@ -1,0 +1,10 @@
+{
+  "environment": {
+    "HOST": "127.0.0.1",
+    "PORT": "4312",
+    "FOOTBALL_LEAGUE_ID": "replace-with-verified-league-id"
+  },
+  "secretFiles": {
+    "DATABASE_URL": "/absolute/path/to/private/database-url.local"
+  }
+}

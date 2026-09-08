@@ -1,0 +1,9 @@
+{
+  "environment": {
+    "FOOTBALL_LEAGUE_ID": "black4-fantasy-2026",
+    "B4_LEAGUE_BUZZ_EXECUTABLE": "/absolute/path/to/buzz-executable"
+  },
+  "secretFiles": {
+    "DATABASE_URL": "/absolute/private/path/database-url.host"
+  }
+}

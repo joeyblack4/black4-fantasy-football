@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Franchise controls · Black4 Fantasy Football</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/play.js" defer></script>
+  </head>
+  <body>
+    <header>
+      <a class="wordmark" href="/play">BLACK4 <span>FANTASY FOOTBALL</span></a
+      ><span class="edition">FRANCHISE CONTROLS</span>
+    </header>
+    <main>
+      <div class="notice">
+        <span class="dot" aria-hidden="true"></span
+        ><span id="mode-notice"
+          >LOCAL FOUNDATION · Synthetic demo data is test evidence. No live
+          league or authenticated model performance is claimed.</span
+        >
+      </div>
+      <p id="error" role="alert" hidden></p>
+      <section id="login">
+        <p class="eyebrow">OWNER ACCESS</p>
+        <h1>Your franchise.<br />Your decisions.</h1>
+        <p class="intro">
+          Draft, set your lineup and talk with other owners from your phone.
+        </p>
+        <form id="login-form">
+          <label for="credential">Owner access token</label>
+          <div class="login-row">
+            <input
+              id="credential"
+              type="password"
+              autocomplete="off"
+              required
+              placeholder="Paste your owner token"
+            /><button type="submit">Open franchise</button>
+          </div>
+        </form>
+        <p class="hint">
+          Use your franchise owner credential. Commissioner credentials belong
+          in the <a href="/">operations view</a>.
+        </p>
+      </section>
+      <div id="workbench" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow" id="owner-label">FRANCHISE</p>
+            <h1 id="team-name">Franchise</h1>
+          </div>
+          <div class="controls">
+            <span id="updated"></span
+            ><button id="refresh" class="secondary" type="button">
+              Refresh</button
+            ><button id="logout" class="secondary" type="button">
+              Sign out
+            </button>
+          </div>
+        </div>
+        <nav class="summary" aria-label="Franchise sections">
+          <a href="/review">Convention & review</a><a href="#draft">Draft</a
+          ><a href="#lineup">Lineup</a><a href="#scores">Scores</a
+          ><a href="#trades">Trades</a><a href="#inbox">Private inbox</a
+          ><a href="#receipts">Receipts</a>
+        </nav>
+        <section id="pending-panel" class="receipts" hidden>
+          <h2>Request needs reconciliation</h2>
+          <p id="pending-description" class="hint"></p>
+          <button id="retry" type="button">Retry the exact request</button>
+          <p class="hint">
+            The same request ID is preserved until the server confirms
+            acceptance or rejection. Other changes pause while this is
+            unresolved.
+          </p>
+        </section>
+        <div class="workspace">
+          <section id="draft">
+            <div class="table-heading">
+              <h2>Draft room</h2>
+              <span id="draft-status"></span>
+            </div>
+            <p id="on-clock" class="empty"></p>
+            <form id="draft-form">
+              <label for="player-search">Find an available player</label
+              ><input
+                id="player-search"
+                type="search"
+                placeholder="Name, position or player ID"
+                autocomplete="off"
+              /><label for="draft-player">Available players</label
+              ><select
+                id="draft-player"
+                required
+                aria-describedby="draft-hint"
+              ></select>
+              <p id="draft-hint" class="hint"></p>
+              <div class="controls">
+                <button id="draft-submit" type="submit">
+                  Draft selected player</button
+                ><button id="queue-add" class="secondary" type="button">
+                  Add to my queue
+                </button>
+              </div>
+            </form>
+            <details id="draft-queue-details" open>
+              <summary>My private draft queue</summary>
+              <p class="hint">
+                Top to bottom is your preferred order. The server uses this
+                queue only when an automatic pick is due.
+              </p>
+              <ol id="queue" class="records"></ol>
+              <button id="queue-save" type="button">Save private queue</button>
+            </details>
+            <h3>Latest picks</h3>
+            <ol id="picks" class="records"></ol>
+          </section>
+          <aside id="lineup">
+            <div class="table-heading">
+              <h2>Starting lineup</h2>
+              <span id="roster-status"></span>
+            </div>
+            <form id="lineup-form">
+              <label for="lineup-week">Week</label
+              ><input
+                id="lineup-week"
+                type="number"
+                min="1"
+                max="18"
+                required
+                value="1"
+              />
+              <div id="lineup-slots"></div>
+              <p class="hint">
+                Player lock times and eligibility are enforced by the league. A
+                saved lineup is confirmed only after a server receipt.
+              </p>
+              <button type="submit">Save lineup</button>
+            </form>
+            <h3>My roster</h3>
+            <ul id="roster" class="records"></ul>
+          </aside>
+        </div>
+        <section id="scores" class="receipts">
+          <div class="table-heading">
+            <h2>Current week scores</h2>
+            <span id="score-week"></span>
+          </div>
+          <p id="score-note" class="hint">
+            Scoring is available after constitution ratification and game
+            mapping.
+          </p>
+          <div id="score-summary" class="summary"></div>
+          <ul id="score-matchups" class="records"></ul>
+        </section>
+        <section id="trades" class="receipts">
+          <div class="table-heading">
+            <h2>Trade desk</h2>
+            <span>Private proposals</span>
+          </div>
+          <div class="workspace">
+            <form id="trade-form">
+              <label for="trade-team">Other franchise</label
+              ><select id="trade-team" required></select
+              ><label for="trade-give">Offer one of my players</label
+              ><select id="trade-give" required></select
+              ><label for="trade-receive">Request one of their players</label
+              ><select id="trade-receive" required></select
+              ><label for="trade-expiry">Offer expires in</label
+              ><select id="trade-expiry">
+                <option value="24">24 hours</option>
+                <option value="48">48 hours</option>
+                <option value="72">72 hours</option>
+              </select>
+              <p class="hint">
+                This form proposes a one-for-one trade. Both owners must agree;
+                the server checks current ownership and player locks on
+                acceptance.
+              </p>
+              <button type="submit">Propose trade</button>
+            </form>
+            <aside>
+              <h2>Open offers</h2>
+              <div id="offers"></div>
+            </aside>
+          </div>
+        </section>
+        <section id="inbox" class="receipts">
+          <div class="table-heading">
+            <h2>Private owner inbox</h2>
+            <span id="inbox-status"></span>
+          </div>
+          <p id="inbox-note" class="hint"></p>
+          <div class="workspace">
+            <div id="messages"></div>
+            <aside>
+              <form id="message-form">
+                <h2 id="message-title">New message</h2>
+                <label for="recipient">Recipient</label
+                ><select id="recipient" required></select>
+                <p id="reply-context" class="hint" hidden></p>
+                <label for="message-body">Message</label
+                ><textarea
+                  id="message-body"
+                  rows="6"
+                  maxlength="8000"
+                  required
+                ></textarea>
+                <p class="hint">
+                  Delivery into an inbox is distinct from a response. This local
+                  inbox is not a verified live Buzz conversation.
+                </p>
+                <div class="controls">
+                  <button id="message-submit" type="submit">Send message</button
+                  ><button
+                    id="cancel-reply"
+                    class="secondary"
+                    type="button"
+                    hidden
+                  >
+                    Cancel reply
+                  </button>
+                </div>
+              </form>
+            </aside>
+          </div>
+        </section>
+        <section id="receipts" class="receipts" aria-live="polite">
+          <h2>Action receipts</h2>
+          <p class="hint">
+            Only responses actually returned by the server appear here.
+          </p>
+          <ul id="receipt-list" class="records"></ul>
+        </section>
+      </div>
+    </main>
+    <footer>
+      <span>Black4 Fantasy Football · Local foundation</span
+      ><a href="/">Operations</a>
+    </footer>
+  </body>
+</html>

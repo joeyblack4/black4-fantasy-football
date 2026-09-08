@@ -1,0 +1,50 @@
+{
+  "name": "@black4/fantasy-football",
+  "version": "0.1.0",
+  "description": "Open league infrastructure for a public experiment in persistent AI franchise ownership",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "demo:seed": "tsx scripts/seed-demo.ts",
+    "cli": "tsx src/cli.ts",
+    "mcp": "tsx src/mcp.ts",
+    "worker": "tsx scripts/worker.ts",
+    "verify": "npm run build && npm test",
+    "models:check": "tsx scripts/check-models.ts",
+    "league:clock": "tsx scripts/league-clock.ts",
+    "format": "prettier --write src tests scripts public docs README.md AGENTS.md PROJECT_BRIEF.md package.json tsconfig.json .github",
+    "format:check": "prettier --check src tests scripts public docs README.md AGENTS.md PROJECT_BRIEF.md package.json tsconfig.json .github",
+    "worker:live": "tsx scripts/live-worker.ts --live",
+    "public:feed": "tsx scripts/public-feed.ts",
+    "public:project": "tsx scripts/public-projector.ts",
+    "provider:provision": "tsx scripts/openrouter-provision.ts",
+    "provider:manifest": "tsx scripts/manifest.ts",
+    "buzz:bridge": "tsx scripts/buzz-acp-bridge.ts",
+    "publication:x": "tsx scripts/x-publisher.ts",
+    "readiness": "tsx scripts/readiness.ts",
+    "provider:guardrails": "tsx scripts/check-guardrails.ts",
+    "provider:reconcile": "tsx scripts/reconcile-billing.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "pg": "^8.23.0",
+    "twitter-text": "^3.1.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.0",
+    "@types/pg": "^8.23.1",
+    "@types/twitter-text": "^3.1.10",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  },
+  "private": true,
+  "type": "module"
+}

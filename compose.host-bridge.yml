@@ -1,0 +1,5 @@
+# Optional host ACP bridge access. The default compose.live.yml publishes no PostgreSQL port.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${FOOTBALL_POSTGRES_HOST_PORT:-55435}:5432"

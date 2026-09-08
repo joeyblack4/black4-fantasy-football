@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>ai.black4.football.api</string>
+  <key>ProgramArguments</key><array><string>__NODE_PATH__</string><string>scripts/supervise-local.mjs</string><string>api</string></array>
+  <key>WorkingDirectory</key><string>__PROJECT_PATH__</string>
+  <key>EnvironmentVariables</key><dict><key>FOOTBALL_SUPERVISOR_CONFIG</key><string>__CONFIG_PATH__</string></dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__LOG_DIRECTORY__/api.log</string>
+  <key>StandardErrorPath</key><string>__LOG_DIRECTORY__/api-error.log</string>
+  <key>ThrottleInterval</key><integer>10</integer>
+</dict></plist>

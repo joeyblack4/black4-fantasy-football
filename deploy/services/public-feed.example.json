@@ -1,0 +1,9 @@
+{
+  "environment": {
+    "FOOTBALL_LEAGUE_ID": "black4-fantasy-2026",
+    "FOOTBALL_PUBLIC_PORT": "4316"
+  },
+  "secretFiles": {
+    "FOOTBALL_PUBLIC_DATABASE_URL": "/absolute/private/path/public-select-only-database-url"
+  }
+}
