@@ -35,6 +35,21 @@ export const RehearsalArmSchema = z
     reason: z.string().min(10).max(2000),
   })
   .strict();
+export const RehearsalCoveredCostHoldSchema = z
+  .object({
+    epoch: id,
+    expectedHostVersion: z.number().int().positive(),
+    agentId: id,
+    manifestId: z.uuid(),
+    jobId: z.uuid(),
+    fence: z.number().int().positive(),
+    callId: z.uuid(),
+    reservationId: z.uuid(),
+    idempotencyKey: id,
+    reason: z.string().trim().min(10).max(2000),
+    evidenceRef: z.string().trim().min(8).max(2000),
+  })
+  .strict();
 const snapshotHash = z.string().regex(/^[a-f0-9]{64}$/);
 export const RehearsalReviewSnapshotAttestationSchema = z
   .object({
@@ -528,18 +543,190 @@ export async function assertRehearsalClaim(
   );
   return row;
 }
+/** Revalidated evidence, not a settlement: only a dead first-request 429 with no effects. */
+async function coveredHoldEvidence(
+  tx: Pick<Db, "query">,
+  leagueId: string,
+  request: z.infer<typeof RehearsalCoveredCostHoldSchema>,
+) {
+  const row = await jobEpoch(tx, {
+    id: request.jobId,
+    agentId: request.agentId,
+  });
+  check(
+    row &&
+      row.league_id === leagueId &&
+      row.epoch === request.epoch &&
+      row.status === "armed" &&
+      row.trial_host?.version === request.expectedHostVersion &&
+      row.trial_host?.host === "mfl" &&
+      row.trial_host?.config?.leagueId === "46625",
+    "REHEARSAL_COST_REVIEW_SCOPE",
+  );
+  check(
+    fingerprint(await hostBinding(tx as Tx, leagueId)) ===
+      fingerprint(row.trial_host),
+    "REHEARSAL_HOST_DRIFT",
+  );
+  const owner = (await owners(tx, leagueId)).find(
+    (o) => o.agent_id === request.agentId,
+  );
+  check(
+    owner &&
+      owner.manifest_id === request.manifestId &&
+      row.manifest_id === request.manifestId &&
+      bindingHash(owner) === row.binding_hash,
+    "REHEARSAL_OWNER_DRIFT",
+  );
+  const job = (
+    await tx.query("SELECT * FROM runtime_jobs WHERE id=$1", [request.jobId])
+  ).rows[0];
+  const r = (
+    await tx.query("SELECT * FROM runtime_reservations WHERE id=$1", [
+      request.reservationId,
+    ])
+  ).rows[0];
+  const calls = (
+    await tx.query(
+      "SELECT * FROM provider_calls WHERE job_id=$1 ORDER BY started_at,id",
+      [request.jobId],
+    )
+  ).rows;
+  const call = calls[0];
+  check(
+    job &&
+      job.agent_id === request.agentId &&
+      job.status === "dead" &&
+      job.fence === request.fence &&
+      job.attempts === 1 &&
+      request.fence === 1 &&
+      job.error === "PROVIDER_HTTP_429_COST_UNCERTAIN",
+    "REHEARSAL_COST_REVIEW_DEAD_FIRST_429_REQUIRED",
+  );
+  check(
+    r &&
+      r.agent_id === request.agentId &&
+      r.job_id === request.jobId &&
+      r.fence === request.fence &&
+      r.status === "uncertain" &&
+      Number(r.amount_micros) > 0 &&
+      r.actual_micros === null &&
+      r.observed_micros === null,
+    "REHEARSAL_COST_REVIEW_FULL_UNKNOWN_HOLD_REQUIRED",
+  );
+  check(
+    calls.length === 1 &&
+      call.id === request.callId &&
+      call.fence === request.fence &&
+      call.agent_id === request.agentId &&
+      call.manifest_id === request.manifestId &&
+      call.purpose === "owner" &&
+      call.status === "http_429_cost_uncertain" &&
+      call.reconciliation_status === "pending" &&
+      call.cost_micros === null &&
+      call.reported_model === null &&
+      call.reported_provider === null &&
+      call.prompt_tokens === null &&
+      call.completion_tokens === null &&
+      call.requested_model === owner.document.model &&
+      call.requested_provider === owner.document.providerSlug,
+    "REHEARSAL_COST_REVIEW_CALL_MISMATCH",
+  );
+  const effects = (
+    await tx.query(
+      `SELECT
+    (SELECT count(*) FROM runtime_football_outbox WHERE job_id=$1) football,
+    (SELECT count(*) FROM runtime_franchise_outbox WHERE job_id=$1) franchise,
+    (SELECT count(*) FROM research_paid_operations WHERE job_id=$1) research,
+    (SELECT count(*) FROM runtime_receipts WHERE job_id=$1 AND type='rehearsal.owner_decision') decisions`,
+      [request.jobId],
+    )
+  ).rows[0];
+  check(
+    Object.values(effects).every((v) => Number(v) === 0),
+    "REHEARSAL_COST_REVIEW_EFFECTS_PRESENT",
+  );
+  const liabilities = (
+    await tx.query(
+      "SELECT COALESCE(sum(amount_micros),0)::text total FROM runtime_reservations WHERE agent_id=$1 AND status IN ('reserved','uncertain')",
+      [request.agentId],
+    )
+  ).rows[0];
+  check(
+    Number(owner.reserved_micros) >= Number(liabilities.total),
+    "REHEARSAL_COST_REVIEW_WALLET_HOLD_MISSING",
+  );
+  return {
+    host: row.trial_host,
+    bindingHash: row.binding_hash,
+    reservation: {
+      id: r.id,
+      agentId: r.agent_id,
+      jobId: r.job_id,
+      fence: r.fence,
+      status: r.status,
+      heldMicros: Number(r.amount_micros),
+      actualMicros: r.actual_micros,
+      observedMicros: r.observed_micros,
+    },
+    job: {
+      id: job.id,
+      fence: job.fence,
+      attempts: job.attempts,
+      status: job.status,
+      error: job.error,
+    },
+    call: JSON.parse(JSON.stringify(call)),
+    effects,
+  };
+}
+
 export async function rehearsalUsage(
   tx: Pick<Db, "query">,
   leagueId: string,
   epoch: string,
   agentId: string,
 ) {
-  return (
+  const usage = (
     await tx.query(
       `WITH model AS(SELECT COALESCE(sum(CASE WHEN r.status='released' THEN 0 WHEN r.status='settled' THEN r.actual_micros ELSE GREATEST(r.amount_micros,COALESCE(r.observed_micros,0)) END),0) cost,count(*) FILTER(WHERE r.status='uncertain') unresolved FROM runtime_reservations r JOIN runtime_rehearsal_jobs j ON j.job_id=r.job_id AND j.agent_id=r.agent_id WHERE j.league_id=$1 AND j.epoch=$2 AND j.agent_id=$3), research AS(SELECT COALESCE(sum(CASE WHEN p.status='completed' AND p.actual_micros IS NOT NULL THEN p.actual_micros ELSE p.reservation_micros END),0) cost,count(*) FILTER(WHERE p.status='unknown' OR (p.status='completed' AND p.actual_micros IS NULL)) unresolved FROM research_paid_operations p JOIN runtime_rehearsal_jobs j ON j.job_id=p.job_id AND j.agent_id=p.agent_id WHERE j.league_id=$1 AND j.epoch=$2 AND j.agent_id=$3) SELECT (m.cost+r.cost)::text AS committed_micros,(m.unresolved+r.unresolved)::int AS unresolved FROM model m CROSS JOIN research r`,
       [leagueId, epoch, agentId],
     )
   ).rows[0];
+  let coveredUnresolved = 0;
+  const acknowledgments = (
+    await tx.query(
+      "SELECT details FROM runtime_receipts WHERE type='rehearsal.cost_hold_acknowledged' AND agent_id=$1 AND details->>'leagueId'=$2 AND details->>'epoch'=$3",
+      [agentId, leagueId, epoch],
+    )
+  ).rows;
+  if (acknowledgments.length === 1) {
+    const a = acknowledgments[0].details;
+    const request = RehearsalCoveredCostHoldSchema.safeParse(a.request);
+    if (
+      request.success &&
+      request.data.agentId === agentId &&
+      request.data.epoch === epoch &&
+      fingerprint(request.data) === a.requestHash
+    ) {
+      try {
+        const evidence = await coveredHoldEvidence(tx, leagueId, request.data);
+        if (
+          fingerprint(evidence) === a.evidenceHash &&
+          fingerprint(a.evidence) === a.evidenceHash
+        )
+          coveredUnresolved = 1;
+      } catch (error) {
+        if (!(error instanceof RuntimeError)) throw error;
+        // Changed evidence invalidates admission; it never changes the liability.
+      }
+    }
+  }
+  return {
+    ...usage,
+    covered_unresolved: coveredUnresolved,
+    unreviewed_unresolved: Number(usage.unresolved) - coveredUnresolved,
+  };
 }
 /** Called under the canonical wallet lock for model AND research reservations. */
 export async function assertRehearsalBudget(tx: Tx, job: Job, amount: number) {
@@ -550,7 +737,11 @@ export async function assertRehearsalBudget(tx: Tx, job: Job, amount: number) {
     Number.isSafeInteger(amount) && amount >= 0,
     "REHEARSAL_INVALID_RESERVATION",
   );
-  check(!used.unresolved, "REHEARSAL_COST_UNRESOLVED");
+  check(!used.unreviewed_unresolved, "REHEARSAL_COST_UNRESOLVED");
+  check(
+    !(await unresolvedNative(tx, row)).length,
+    "REHEARSAL_NATIVE_UNRESOLVED",
+  );
   check(
     Number(used.committed_micros) + amount <= Number(row.cap_micros),
     "REHEARSAL_CAP_EXHAUSTED",
@@ -742,6 +933,73 @@ export class RehearsalRuntime {
     readonly db: Db,
     readonly runtime: RuntimeStore,
   ) {}
+  /** One commissioner-reviewed liability per owner/epoch; does not settle, wake, or enable. */
+  async acknowledgeCoveredCostHold(actor: Actor, input: unknown) {
+    authorize(actor);
+    const request = RehearsalCoveredCostHoldSchema.parse(input);
+    return transaction(this.db, async (tx) => {
+      await lock(tx, actor.leagueId);
+      const prior = (
+        await tx.query(
+          "SELECT details FROM runtime_receipts WHERE type='rehearsal.cost_hold_acknowledged' AND agent_id=$1 AND details->>'leagueId'=$2 AND details->>'epoch'=$3",
+          [request.agentId, actor.leagueId, request.epoch],
+        )
+      ).rows;
+      const requestHash = fingerprint(request);
+      check(
+        prior.length <= 1 &&
+          (!prior.length || prior[0].details.requestHash === requestHash),
+        "REHEARSAL_COST_REVIEW_CONFLICT",
+      );
+      const evidence = await coveredHoldEvidence(tx, actor.leagueId, request);
+      check(
+        !(
+          await tx.query(
+            "SELECT 1 FROM runtime_jobs WHERE agent_id=$1 AND status='running'",
+            [request.agentId],
+          )
+        ).rowCount,
+        "REHEARSAL_COST_REVIEW_RUNNING_JOB",
+      );
+      const row = await jobEpoch(tx, {
+        id: request.jobId,
+        agentId: request.agentId,
+      });
+      check(
+        !(await unresolvedNative(tx, row)).length,
+        "REHEARSAL_NATIVE_UNRESOLVED",
+      );
+      if (prior.length) {
+        check(
+          prior[0].details.evidenceHash === fingerprint(evidence),
+          "REHEARSAL_COST_REVIEW_EVIDENCE_CHANGED",
+        );
+        return { ...prior[0].details, replayed: true };
+      }
+      const details = {
+        leagueId: actor.leagueId,
+        epoch: request.epoch,
+        request,
+        requestHash,
+        evidence,
+        evidenceHash: fingerprint(evidence),
+        reviewedBy: actor.id,
+        disposition: "permit-new-work-with-full-cost-hold",
+        reconciled: false,
+        automaticWake: false,
+        reservationStatus: "uncertain",
+        unchangedCapMicros: Number(row.cap_micros),
+      };
+      const receiptId = await receipt(
+        tx,
+        "rehearsal.cost_hold_acknowledged",
+        details,
+        request.agentId,
+        request.jobId,
+      );
+      return { ...details, receiptId, replayed: false };
+    });
+  }
   /** Explicit review-format attestation; never changes owner evidence or legacy hashes. */
   async attestClosedReviewSnapshots(actor: Actor, input: unknown) {
     authorize(actor);

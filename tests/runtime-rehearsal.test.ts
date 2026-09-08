@@ -6,6 +6,7 @@ import {
   RehearsalArmSchema,
   persistedReviewSnapshotHash,
   assertRehearsalBudget,
+  rehearsalUsage,
   tagRehearsalWake,
 } from "../src/runtime/rehearsal.js";
 import { TestDriver, runOne } from "../src/runtime/worker.js";
@@ -1342,4 +1343,333 @@ it("keeps legacy synthetic context explicit and fails closed when real mode has 
   await expect(service.context("agent0")).rejects.toThrow(
     "PREPARED_RULES_BINDING_REQUIRED",
   );
+});
+
+async function failed429Fixture() {
+  const manifestId = randomUUID();
+  await f.db.query(
+    `INSERT INTO provider_manifests(id,league_id,agent_id,version,document,key_fingerprint,status)
+    VALUES($1,$2,'agent0',1,$3,'synthetic-key-hash','active')`,
+    [
+      manifestId,
+      leagueId,
+      { model: "synthetic/rehearsal", providerSlug: "synthetic/provider" },
+    ],
+  );
+  await service.arm(actor, config);
+  await enable();
+  await wake("synthetic-first-429");
+  const job = (await store.claim(
+    "failed-worker",
+    30000,
+    "synthetic/rehearsal",
+    ["agent0"],
+  ))!;
+  const reservationId = await store.reserve(job, 30);
+  const callId = randomUUID();
+  await f.db.query(
+    `INSERT INTO provider_calls(id,manifest_id,agent_id,job_id,fence,staff_role,purpose,requested_model,requested_provider,status,completed_at)
+    VALUES($1,$2,'agent0',$3,$4,'owner','owner','synthetic/rehearsal','synthetic/provider','http_429_cost_uncertain',clock_timestamp())`,
+    [callId, manifestId, job.id, job.fence],
+  );
+  await store.fail(job, "PROVIDER_HTTP_429_COST_UNCERTAIN", {
+    retryable: false,
+    chargeKnownZero: false,
+    reservationId,
+  });
+  const request = {
+    epoch,
+    expectedHostVersion: 2,
+    agentId: "agent0",
+    manifestId,
+    jobId: job.id,
+    fence: job.fence,
+    callId,
+    reservationId,
+    idempotencyKey: "review-429",
+    reason:
+      "SYNTHETIC reviewed transient first-request rejection, charge remains unknown",
+    evidenceRef: "synthetic://429-evidence",
+  };
+  return { job, request };
+}
+async function nextBudget(amount: number) {
+  await wake("next-scoped-turn");
+  const job = (await store.claim("next-worker", 30000, "synthetic/rehearsal", [
+    "agent0",
+  ]))!;
+  return { job, reserve: () => store.reserve(job, amount) };
+}
+it("acknowledges an exact covered 429 concurrently without changing wallet, evidence, or waking work", async () => {
+  const { request } = await failed429Fixture();
+  const walletBefore = (
+    await f.db.query(
+      "SELECT spent_micros,reserved_micros FROM runtime_agents WHERE id='agent0'",
+    )
+  ).rows;
+  const holdBefore = (
+    await f.db.query("SELECT * FROM runtime_reservations WHERE id=$1", [
+      request.reservationId,
+    ])
+  ).rows;
+  const [a, b] = await Promise.all([
+    service.acknowledgeCoveredCostHold(actor, request),
+    service.acknowledgeCoveredCostHold(actor, request),
+  ]);
+  expect(a.receiptId).toBe(b.receiptId);
+  expect([a.replayed, b.replayed].sort()).toEqual([false, true]);
+  expect(
+    (
+      await f.db.query(
+        "SELECT count(*) FROM runtime_receipts WHERE type='rehearsal.cost_hold_acknowledged'",
+      )
+    ).rows[0].count,
+  ).toBe("1");
+  expect(
+    (
+      await f.db.query(
+        "SELECT spent_micros,reserved_micros FROM runtime_agents WHERE id='agent0'",
+      )
+    ).rows,
+  ).toEqual(walletBefore);
+  expect(
+    (
+      await f.db.query("SELECT * FROM runtime_reservations WHERE id=$1", [
+        request.reservationId,
+      ])
+    ).rows,
+  ).toEqual(holdBefore);
+  expect(
+    (
+      await f.db.query(
+        "SELECT count(*) FROM runtime_jobs WHERE status IN('pending','running')",
+      )
+    ).rows[0].count,
+  ).toBe("0");
+  expect(await rehearsalUsage(f.db, leagueId, epoch, "agent0")).toMatchObject({
+    committed_micros: "30",
+    unresolved: 1,
+    covered_unresolved: 1,
+    unreviewed_unresolved: 0,
+  });
+  const next = await nextBudget(70);
+  await expect(next.reserve()).resolves.toEqual(expect.any(String));
+  expect(
+    (
+      await f.db.query(
+        "SELECT reserved_micros FROM runtime_agents WHERE id='agent0'",
+      )
+    ).rows[0].reserved_micros,
+  ).toBe("100");
+});
+it("keeps the unchanged cap and blocks new unacknowledged uncertainty", async () => {
+  const { request } = await failed429Fixture();
+  await service.acknowledgeCoveredCostHold(actor, request);
+  const next = await nextBudget(71);
+  await expect(next.reserve()).rejects.toThrow("REHEARSAL_CAP_EXHAUSTED");
+  const r = await store.reserve(next.job, 20);
+  await store.fail(next.job, "PROVIDER_HTTP_429_COST_UNCERTAIN", {
+    retryable: false,
+    chargeKnownZero: false,
+    reservationId: r,
+  });
+  const usage = await rehearsalUsage(f.db, leagueId, epoch, "agent0");
+  expect(usage).toMatchObject({
+    committed_micros: "50",
+    unresolved: 2,
+    covered_unresolved: 1,
+    unreviewed_unresolved: 1,
+  });
+  await wake("third-turn");
+  const third = (await store.claim("third", 30000, "synthetic/rehearsal", [
+    "agent0",
+  ]))!;
+  await expect(store.reserve(third, 1)).rejects.toThrow(
+    "REHEARSAL_COST_UNRESOLVED",
+  );
+  await expect(
+    service.acknowledgeCoveredCostHold(actor, {
+      ...request,
+      idempotencyKey: "second-review",
+    }),
+  ).rejects.toThrow("REHEARSAL_COST_REVIEW_CONFLICT");
+});
+it("rejects owner, different league/host/call/fence, and review payload conflicts", async () => {
+  const { request } = await failed429Fixture();
+  await expect(
+    service.acknowledgeCoveredCostHold(
+      { ...actor, role: "owner", teamId: "team0" },
+      request,
+    ),
+  ).rejects.toThrow("COMMISSIONER");
+  await expect(
+    service.acknowledgeCoveredCostHold(
+      { ...actor, leagueId: "other" },
+      request,
+    ),
+  ).rejects.toThrow("SCOPE");
+  await expect(
+    service.acknowledgeCoveredCostHold(actor, {
+      ...request,
+      expectedHostVersion: 3,
+    }),
+  ).rejects.toThrow("SCOPE");
+  await expect(
+    service.acknowledgeCoveredCostHold(actor, {
+      ...request,
+      callId: randomUUID(),
+    }),
+  ).rejects.toThrow("CALL_MISMATCH");
+  await expect(
+    service.acknowledgeCoveredCostHold(actor, { ...request, fence: 2 }),
+  ).rejects.toThrow("DEAD_FIRST_429");
+  await service.acknowledgeCoveredCostHold(actor, request);
+  await expect(
+    service.acknowledgeCoveredCostHold(actor, {
+      ...request,
+      reason: "changed reviewed request reason",
+    }),
+  ).rejects.toThrow("CONFLICT");
+});
+it.each(["key", "manifest", "hold", "call", "receipt"] as const)(
+  "invalidates covered admission after %s evidence changes",
+  async (change) => {
+    const { request } = await failed429Fixture();
+    await service.acknowledgeCoveredCostHold(actor, request);
+    if (change === "key")
+      await f.db.query(
+        "UPDATE provider_manifests SET key_fingerprint='changed' WHERE id=$1",
+        [request.manifestId],
+      );
+    if (change === "manifest")
+      await f.db.query(
+        "UPDATE provider_manifests SET status='retired' WHERE id=$1",
+        [request.manifestId],
+      );
+    if (change === "hold")
+      await f.db.query(
+        "UPDATE runtime_reservations SET amount_micros=29 WHERE id=$1",
+        [request.reservationId],
+      );
+    if (change === "call")
+      await f.db.query(
+        "UPDATE provider_calls SET request_id='later-evidence' WHERE id=$1",
+        [request.callId],
+      );
+    if (change === "receipt")
+      await f.db.query(
+        "UPDATE runtime_receipts SET details=jsonb_set(details,'{evidence,reservation,heldMicros}','29') WHERE type='rehearsal.cost_hold_acknowledged'",
+      );
+    expect(await rehearsalUsage(f.db, leagueId, epoch, "agent0")).toMatchObject(
+      { unresolved: 1, covered_unresolved: 0, unreviewed_unresolved: 1 },
+    );
+  },
+);
+it("rejects effects or uncovered wallet liability and blocks native uncertainty after acknowledgment", async () => {
+  const { request } = await failed429Fixture();
+  await f.db.query(
+    "UPDATE runtime_agents SET reserved_micros=29 WHERE id='agent0'",
+  );
+  await expect(
+    service.acknowledgeCoveredCostHold(actor, request),
+  ).rejects.toThrow("WALLET_HOLD_MISSING");
+  await f.db.query(
+    "UPDATE runtime_agents SET reserved_micros=30 WHERE id='agent0'",
+  );
+  await f.db.query(
+    "INSERT INTO runtime_receipts(type,agent_id,job_id,details) VALUES('rehearsal.owner_decision','agent0',$1,'{}')",
+    [request.jobId],
+  );
+  await expect(
+    service.acknowledgeCoveredCostHold(actor, request),
+  ).rejects.toThrow("EFFECTS_PRESENT");
+  await f.db.query(
+    "DELETE FROM runtime_receipts WHERE type='rehearsal.owner_decision'",
+  );
+  await service.acknowledgeCoveredCostHold(actor, request);
+  await f.db.query(
+    "INSERT INTO runtime_receipts(type,details) VALUES('mfl_operation',$1)",
+    [
+      {
+        leagueId,
+        scope: "synthetic",
+        idempotencyKey: "uncertain-native",
+        state: "unknown",
+      },
+    ],
+  );
+  const next = await nextBudget(1);
+  await expect(next.reserve()).rejects.toThrow("REHEARSAL_NATIVE_UNRESOLVED");
+});
+
+it.each(["football", "franchise", "research"] as const)(
+  "refuses to acknowledge a request with any persisted %s effect",
+  async (kind) => {
+    const { request } = await failed429Fixture();
+    if (kind === "research")
+      await f.db.query(
+        `INSERT INTO research_paid_operations(id,league_id,agent_id,job_id,fence,operation_key,fingerprint,kind,status,reservation_micros,tariff,request_hash)
+    VALUES($1,$2,'agent0',$3,1,'synthetic-effect','synthetic','search','unknown',1,'{}','synthetic')`,
+        [randomUUID(), leagueId, request.jobId],
+      );
+    else {
+      // The payload is deliberately inert: mere existence is enough to block admission.
+      const table =
+        kind === "football"
+          ? "runtime_football_outbox"
+          : "runtime_franchise_outbox";
+      const column = kind === "football" ? "command" : "action";
+      await f.db.query(
+        `INSERT INTO ${table}(id,agent_id,job_id,causal_id,fingerprint,origin_fence,league_id,team_id,owner_id,${column},status)
+      VALUES($1,'agent0',$2,'synthetic-effect','synthetic',1,$3,'team0','owner0','{}','dead')`,
+        [randomUUID(), request.jobId, leagueId],
+      );
+    }
+    await expect(
+      service.acknowledgeCoveredCostHold(actor, request),
+    ).rejects.toThrow("EFFECTS_PRESENT");
+  },
+);
+it("preserves acknowledged invoice uncertainty when stopping and restoring production", async () => {
+  const { request } = await failed429Fixture();
+  const a = await service.acknowledgeCoveredCostHold(actor, request);
+  const before = (
+    await f.db.query("SELECT * FROM runtime_reservations WHERE id=$1", [
+      request.reservationId,
+    ])
+  ).rows;
+  await service.stop(actor, {
+    epoch,
+    reason: "SYNTHETIC completed bounded evaluation; preserve pending invoice",
+  });
+  expect(await rehearsalUsage(f.db, leagueId, epoch, "agent0")).toMatchObject({
+    unresolved: 1,
+    covered_unresolved: 0,
+  });
+  await service.restore(actor, {
+    epoch,
+    reason: "SYNTHETIC restore production host; invoice remains reserved",
+  });
+  expect(
+    (
+      await f.db.query("SELECT * FROM runtime_reservations WHERE id=$1", [
+        request.reservationId,
+      ])
+    ).rows,
+  ).toEqual(before);
+  expect((await hostBinding(f.db, leagueId)).config.leagueId).toBe("62282");
+  expect(
+    (
+      await f.db.query(
+        "SELECT details->>'receiptId' id FROM runtime_receipts WHERE type='rehearsal.cost_hold_acknowledged'",
+      )
+    ).rows[0].id,
+  ).toBe(a.receiptId);
+  expect(
+    (
+      await f.db.query(
+        "SELECT reserved_micros,spent_micros FROM runtime_agents WHERE id='agent0'",
+      )
+    ).rows[0],
+  ).toEqual({ reserved_micros: "30", spent_micros: "0" });
 });

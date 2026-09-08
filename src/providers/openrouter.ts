@@ -27,6 +27,7 @@ import {
   type PromptCachingMode,
 } from "./prompt-caching.js";
 import { validateStructuredOwnerMemory } from "../runtime/owner-memory-schema.js";
+import { providerErrorHeaders } from "./error-headers.js";
 
 class MemoryCapacityError extends Error {
   constructor(
@@ -588,7 +589,22 @@ export class OpenRouterDriver implements AgentDriver {
         await record({ status: "network_cost_uncertain" });
         throw new Error("PROVIDER_NETWORK_FAILURE_COST_UNCERTAIN");
       }
+      const responseHeaders = providerErrorHeaders(
+        response.headers,
+        config.apiKey,
+      );
       if (!response.ok) {
+        // Persist the locator before reading an error body that may stall or fail.
+        // No cost, serving identity, retry, or successful action follows from a header.
+        await record({
+          status: `http_${response.status}_cost_uncertain`,
+          ...(responseHeaders.generationId
+            ? { generationId: responseHeaders.generationId }
+            : {}),
+          ...(responseHeaders.requestId
+            ? { requestId: responseHeaders.requestId }
+            : {}),
+        });
         // Bounded private diagnostics are evidence, never an automatic retry grant.
         let errorBody: any;
         try {
@@ -628,12 +644,12 @@ export class OpenRouterDriver implements AgentDriver {
           message: clean(errorBody?.error?.message),
           providerMessage: clean(errorBody?.error?.metadata?.raw),
           errorType: clean(errorBody?.error?.metadata?.error_type),
+          responseHeaders,
           costKnown: false,
         };
         if (callId && config.identity)
           await config.identity.registry.diagnostic(callId, diagnostic);
         await config.diagnostic?.(diagnostic);
-        await record({ status: `http_${response.status}_cost_uncertain` });
         throw new Error(`PROVIDER_HTTP_${response.status}_COST_UNCERTAIN`);
       }
       let raw: any;
@@ -642,6 +658,21 @@ export class OpenRouterDriver implements AgentDriver {
         value?: unknown,
         parseError?: unknown,
       ) => {
+        // A broken HTTP-200 body also has no usable body ID. Retain only the
+        // HTTP locator; never overwrite a parsed generation's ID from this path.
+        if (
+          ["invalid_json", "invalid_response_shape"].includes(reason) &&
+          (responseHeaders.generationId || responseHeaders.requestId)
+        )
+          await record({
+            status: "invalid_response_cost_uncertain",
+            ...(responseHeaders.generationId
+              ? { generationId: responseHeaders.generationId }
+              : {}),
+            ...(responseHeaders.requestId
+              ? { requestId: responseHeaders.requestId }
+              : {}),
+          });
         const contentType = response.headers
           .get("content-type")
           ?.split(";")[0]
@@ -656,6 +687,7 @@ export class OpenRouterDriver implements AgentDriver {
           callId,
           httpStatus: response.status,
           reason,
+          responseHeaders,
           contentType:
             contentType &&
             [

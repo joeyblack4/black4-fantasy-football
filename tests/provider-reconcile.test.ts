@@ -7,6 +7,7 @@ import {
 } from "../src/providers/manifests.js";
 import { RuntimeStore, type Job } from "../src/runtime/index.js";
 import { BillingReconciler } from "../src/providers/reconcile.js";
+import { providerErrorHeaders } from "../src/providers/error-headers.js";
 let f: Awaited<ReturnType<typeof testDb>>,
   registry: ManifestRegistry,
   runtime: RuntimeStore,
@@ -119,6 +120,57 @@ async function wallet() {
     )
   ).rows[0];
 }
+it("keeps a future error-header locator unpaid until independently verified generation metadata settles it", async () => {
+  const turn = await fixture([null]);
+  const header = providerErrorHeaders(
+    new Headers({
+      "x-generation-id": "gen-error-header123",
+      "x-request-id": "request-123",
+      "retry-after": "30",
+    }),
+    secret,
+  );
+  await registry.observe(turn.callIds[0], {
+    status: "http_429_cost_uncertain",
+    generationId: header.generationId,
+    requestId: header.requestId,
+  });
+  expect(
+    (
+      await f.db.query(
+        "SELECT generation_id,request_id,reported_model,reported_provider,cost_micros,reconciliation_status FROM provider_calls WHERE id=$1",
+        [turn.callIds[0]],
+      )
+    ).rows[0],
+  ).toEqual({
+    generation_id: "gen-error-header123",
+    request_id: "request-123",
+    reported_model: null,
+    reported_provider: null,
+    cost_micros: null,
+    reconciliation_status: "pending",
+  });
+  expect(await wallet()).toMatchObject({
+    spent_micros: "0",
+    reserved_micros: "100",
+  });
+  const incomplete = await execute(responder((id) => ({ id })));
+  expect(incomplete.calls[0].status).toBe("pending_metadata_incomplete");
+  expect(await wallet()).toMatchObject({
+    spent_micros: "0",
+    reserved_micros: "100",
+  });
+  const result = await execute(responder((id) => metadata(id)));
+  expect(result.reservations[0]).toEqual({
+    id: turn.reservationId,
+    status: "settled",
+    actualMicros: 20,
+  });
+  expect(await wallet()).toMatchObject({
+    spent_micros: "20",
+    reserved_micros: "0",
+  });
+});
 it("settles only after every exact job/fence call verifies, and replay never double charges", async () => {
   const turn = await fixture(["gen-a", "gen-b"]);
   const first = await execute(
