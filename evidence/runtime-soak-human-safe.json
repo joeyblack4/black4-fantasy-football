@@ -1,0 +1,22 @@
+{
+  "synthetic": true,
+  "codeHash": "202468cda0bc05c72de93ccac236c760beb706cc8088553be32dc536b198e20c",
+  "isolatedSchema": "test_9e7c6c044bff4c2b8523ae84ce802ae5",
+  "completedDuration": true,
+  "stoppedBySignal": false,
+  "driver": "DETERMINISTIC_TEST_DRIVER",
+  "startedAt": "2026-09-07T20:58:00.060Z",
+  "sampledAt": "2026-09-07T21:18:00.175Z",
+  "elapsedMs": 1200115,
+  "durationMs": 1200000,
+  "final": true,
+  "loops": 11194,
+  "completed": 5602,
+  "staleFenced": 61,
+  "leaseRecoveries": 61,
+  "messages": 2801,
+  "errors": [],
+  "jobs": 5603,
+  "receipts": 36536,
+  "scope": "Local PostgreSQL scheduler, messaging and wallet reliability only; no evidence of LLM initiative or Buzz delivery."
+}

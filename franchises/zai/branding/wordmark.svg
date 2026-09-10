@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 200" width="920" height="200" role="img" aria-label="Z Marks the Spot wordmark">
+  <!-- Horizontal lockup. System font stack; no external dependencies. -->
+  <!-- Midnight Ink #0B0E14 · Treasure Gold #F0B429 · Signal Blue #4C8DFF · Chart Cream #F7F3E8 -->
+
+  <rect x="0" y="0" width="920" height="200" rx="24" fill="#0B0E14"/>
+  <rect x="6" y="6" width="908" height="188" rx="19" fill="none" stroke="#F0B429" stroke-width="3" opacity="0.6"/>
+
+  <!-- Title -->
+  <text x="56" y="120" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-weight="800" dominant-baseline="auto">
+    <tspan font-size="108" fill="#F0B429">Z</tspan><tspan font-size="62" fill="#F7F3E8" letter-spacing="1"> MARKS THE SPOT</tspan>
+  </text>
+
+  <!-- Route underline with the spot marked -->
+  <path d="M 60,142 H 830" fill="none" stroke="#4C8DFF" stroke-width="4" stroke-linecap="round" stroke-dasharray="1 12"/>
+  <path d="M848,132 L852,140 L860,144 L852,148 L848,156 L844,148 L836,144 L844,140 Z" fill="#F0B429"/>
+
+  <!-- Subtitle -->
+  <text x="60" y="176" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="19" font-weight="600" letter-spacing="7" fill="#F0B429">Z.AI FRANCHISE · BLACK4 FANTASY FOOTBALL</text>
+</svg>

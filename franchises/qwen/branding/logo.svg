@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Meridian Grid — a brass meridian line crossing a violet coordinate grid, with the zenith point at the intersection">
+  <defs>
+    <clipPath id="disc">
+      <circle cx="256" cy="256" r="212"/>
+    </clipPath>
+    <linearGradient id="ink" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#191240"/>
+      <stop offset="1" stop-color="#0A0818"/>
+    </linearGradient>
+    <linearGradient id="meridianLine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F5C451" stop-opacity="0.15"/>
+      <stop offset="0.5" stop-color="#F5C451" stop-opacity="1"/>
+      <stop offset="1" stop-color="#F5C451" stop-opacity="0.15"/>
+    </linearGradient>
+    <radialGradient id="zenith" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.22" stop-color="#FFE9A8"/>
+      <stop offset="0.45" stop-color="#F5C451"/>
+      <stop offset="1" stop-color="#615CED" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="512" height="512" fill="#0A0818"/>
+  <circle cx="256" cy="256" r="212" fill="url(#ink)"/>
+
+  <g clip-path="url(#disc)">
+    <!-- the grid: yard lines / parallels -->
+    <g stroke="#615CED" stroke-width="5" opacity="0.55">
+      <path d="M0 106H512M0 406H512"/>
+    </g>
+    <g stroke="#615CED" stroke-width="4" opacity="0.42">
+      <path d="M0 156H512M0 356H512"/>
+    </g>
+    <g stroke="#8F86F2" stroke-width="3" opacity="0.24">
+      <path d="M0 131H512M0 181H512M0 206H512M0 306H512M0 331H512M0 381H512"/>
+    </g>
+
+    <!-- longitude ellipses: the sphere the meridian is drawn on -->
+    <ellipse cx="256" cy="256" rx="176" ry="212" fill="none" stroke="#615CED" stroke-width="4" opacity="0.30"/>
+    <ellipse cx="256" cy="256" rx="104" ry="212" fill="none" stroke="#7A70F0" stroke-width="5" opacity="0.72"/>
+
+    <!-- the meridian: one absolute reference line -->
+    <rect x="248" y="0" width="16" height="512" fill="url(#meridianLine)"/>
+    <rect x="253.5" y="0" width="5" height="512" fill="#FFE9A8" opacity="0.55"/>
+
+    <!-- degree ticks on the meridian -->
+    <g stroke="#F5C451" stroke-width="4" opacity="0.9" stroke-linecap="round">
+      <path d="M226 96h18M268 96h18"/>
+      <path d="M232 146h12M268 146h12"/>
+      <path d="M226 196h18M268 196h18"/>
+      <path d="M226 316h18M268 316h18"/>
+      <path d="M232 366h12M268 366h12"/>
+      <path d="M226 416h18M268 416h18"/>
+    </g>
+  </g>
+
+  <!-- ring -->
+  <circle cx="256" cy="256" r="212" fill="none" stroke="#615CED" stroke-width="9" opacity="0.85"/>
+  <circle cx="256" cy="256" r="223" fill="none" stroke="#2B1B6B" stroke-width="4" opacity="0.9"/>
+
+  <!-- zenith: the located point, sun at its highest -->
+  <circle cx="256" cy="256" r="86" fill="url(#zenith)" opacity="0.55"/>
+  <circle cx="256" cy="256" r="40" fill="#0A0818" opacity="0.9"/>
+  <circle cx="256" cy="256" r="34" fill="url(#zenith)"/>
+  <circle cx="256" cy="256" r="13" fill="#FFFFFF"/>
+</svg>

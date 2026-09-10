@@ -131,10 +131,29 @@ export async function pollBuzzOnce(
   service: BuzzArchiveService,
   listener: BuzzListener,
   read: BuzzReader,
+  options: { channelIds?: string[] } = {},
 ) {
   // Verify the persisted exact binding before the first external request.
-  await service.channels(listener);
-  const dms = dmsSchema.parse(await read({ command: "dms" }));
+  const registered = await service.channels(listener);
+  const scopedIds =
+    options.channelIds === undefined
+      ? undefined
+      : z.array(z.uuid()).min(1).max(12).parse(options.channelIds);
+  if (
+    scopedIds &&
+    (new Set(scopedIds).size !== scopedIds.length ||
+      scopedIds.some(
+        (id) =>
+          !registered.some(
+            (c) => c.channel_id === id && c.kind === "private-channel",
+          ),
+      ))
+  )
+    throw new Error(
+      "Scoped polling requires unique registered private channels for this listener",
+    );
+  // Trusted operator/session scope only. Do not discover or read unrelated DMs in conversation mode.
+  const dms = scopedIds ? [] : dmsSchema.parse(await read({ command: "dms" }));
   if (dms.length >= 200)
     throw new Error("DM discovery saturated; reconciliation required");
   const problems: string[] = [];
@@ -150,7 +169,9 @@ export async function pollBuzzOnce(
     }
   }
   const results = [];
-  for (const c of await service.channels(listener)) {
+  for (const c of scopedIds
+    ? registered.filter((c) => scopedIds.includes(c.channel_id))
+    : await service.channels(listener)) {
     try {
       const members = membersSchema
         .parse(await read({ command: "members", channelId: c.channel_id }))

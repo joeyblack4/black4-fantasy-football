@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { transaction, type Db, type Tx } from "../db.js";
 import {
@@ -8,6 +8,10 @@ import {
   type Principal,
 } from "../auth.js";
 import { RuntimeStore } from "../runtime/index.js";
+import {
+  conversationDeliveryEligibleTx,
+  admitConversationDeliveryTx,
+} from "../runtime/conversation.js";
 const hex = z.string().regex(/^[a-f0-9]{64}$/);
 const key = z.string().min(1).max(200);
 const hash = (value: unknown) =>
@@ -39,6 +43,16 @@ export const BuzzConfigurationSchema = z
       )
       .min(2)
       .max(12),
+  })
+  .strict();
+export const BuzzHumanBroadcastSchema = z
+  .object({
+    leagueId: key,
+    channelId: z.uuid(),
+    enabled: z.boolean(),
+    expectedVersion: z.number().int().nonnegative(),
+    idempotencyKey: key,
+    reason: z.string().trim().min(8).max(2000),
   })
   .strict();
 export const BuzzEventSchema = z
@@ -209,6 +223,83 @@ export class BuzzArchiveService {
           ],
         );
       return row;
+    });
+  }
+  /** Trusted authenticated commissioner transport only. This changes routing, never starts a worker or grants model authority. */
+  async configureHumanBroadcast(
+    actor: Principal,
+    input: z.input<typeof BuzzHumanBroadcastSchema>,
+  ) {
+    const v = BuzzHumanBroadcastSchema.parse(input);
+    requireLeague(actor, v.leagueId);
+    requireCommissioner(actor);
+    return transaction(this.db, async (tx) => {
+      // Same conversation lock as canonical ingest serializes the policy boundary.
+      const channel = (
+        await tx.query(
+          "SELECT kind FROM buzz_conversations WHERE league_id=$1 AND channel_id=$2 FOR UPDATE",
+          [v.leagueId, v.channelId],
+        )
+      ).rows[0];
+      assert(
+        channel?.kind === "private-channel",
+        "Human broadcast requires a registered private channel",
+      );
+      const priorReceipt = (
+        await tx.query(
+          "SELECT * FROM buzz_human_broadcast_receipts WHERE league_id=$1 AND actor_id=$2 AND idempotency_key=$3",
+          [v.leagueId, actor.id, v.idempotencyKey],
+        )
+      ).rows[0];
+      if (priorReceipt) {
+        assert(
+          priorReceipt.payload_hash === hash(v),
+          "Human broadcast idempotency conflict",
+        );
+        return {
+          receiptId: priorReceipt.id,
+          policy: priorReceipt.after_policy,
+          replayed: true,
+        };
+      }
+      const before =
+        (
+          await tx.query(
+            "SELECT * FROM buzz_human_broadcast_policies WHERE league_id=$1 AND channel_id=$2",
+            [v.leagueId, v.channelId],
+          )
+        ).rows[0] ?? null;
+      assert(
+        (before?.version ?? 0) === v.expectedVersion,
+        "Human broadcast policy version conflict",
+      );
+      const after = (
+        await tx.query(
+          `INSERT INTO buzz_human_broadcast_policies(league_id,channel_id,enabled,version,effective_after_seconds,changed_by)
+         VALUES($1,$2,$3,$4,CEIL(EXTRACT(EPOCH FROM clock_timestamp()))::bigint,$5)
+         ON CONFLICT(league_id,channel_id) DO UPDATE SET enabled=EXCLUDED.enabled,version=EXCLUDED.version,
+         effective_after_seconds=EXCLUDED.effective_after_seconds,changed_by=EXCLUDED.changed_by,changed_at=clock_timestamp()
+         RETURNING *`,
+          [v.leagueId, v.channelId, v.enabled, v.expectedVersion + 1, actor.id],
+        )
+      ).rows[0];
+      const receiptId = randomUUID();
+      await tx.query(
+        `INSERT INTO buzz_human_broadcast_receipts(id,league_id,channel_id,actor_id,idempotency_key,payload_hash,before_policy,after_policy,reason)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          receiptId,
+          v.leagueId,
+          v.channelId,
+          actor.id,
+          v.idempotencyKey,
+          hash(v),
+          before,
+          after,
+          v.reason,
+        ],
+      );
+      return { receiptId, policy: after, replayed: false };
     });
   }
   private async listener(tx: Tx, listener: BuzzListener) {
@@ -530,15 +621,38 @@ export class BuzzArchiveService {
               )
             ).rows[0]
           : null;
+        // No implicit broadcast for a reply (even to an unknown event) or any mention
+        // tag (even malformed/outside the channel). Agent posts never enter this path.
+        const broadcast =
+          c.kind === "private-channel" &&
+          e.kind === 9 &&
+          !e.tags.some((t) => t[0] === "p" || t[0] === "e") &&
+          !!(
+            await tx.query(
+              `SELECT 1 FROM buzz_human_broadcast_policies policy
+             JOIN buzz_participants author ON author.league_id=policy.league_id AND author.pubkey=$3 AND author.kind='human' AND author.agent_id IS NULL
+             JOIN league_teams team ON team.league_id=author.league_id AND team.id=author.team_id AND team.owner_id=author.owner_id AND team.kind='human'
+             WHERE policy.league_id=$1 AND policy.channel_id=$2 AND policy.enabled AND $4::bigint >= policy.effective_after_seconds`,
+              [listener.leagueId, input.channelId, e.pubkey, e.created_at],
+            )
+          ).rowCount;
         const recipients = (
           await tx.query(
-            `SELECT p.* FROM buzz_participants p JOIN runtime_bindings b ON b.agent_id=p.agent_id AND b.league_id=p.league_id AND b.team_id=p.team_id JOIN league_teams t ON t.league_id=p.league_id AND t.id=p.team_id AND t.owner_id=p.owner_id JOIN runtime_agents a ON a.id=p.agent_id AND a.enabled WHERE p.league_id=$1 AND p.pubkey=ANY($2::text[]) AND p.pubkey<>$3 ORDER BY p.agent_id`,
-            [listener.leagueId, c.member_pubkeys, e.pubkey],
+            `SELECT p.* FROM buzz_participants p JOIN runtime_bindings b ON b.agent_id=p.agent_id AND b.league_id=p.league_id AND b.team_id=p.team_id JOIN league_teams t ON t.league_id=p.league_id AND t.id=p.team_id AND t.owner_id=p.owner_id JOIN runtime_agents a ON a.id=p.agent_id AND a.kind='ai'
+             WHERE p.kind='agent' AND p.league_id=$1 AND p.pubkey=ANY($2::text[]) AND p.pubkey<>$3
+             AND (a.enabled OR EXISTS (
+               SELECT 1 FROM runtime_conversation_sessions session
+               JOIN runtime_conversation_owners owner ON owner.session_id=session.id AND owner.agent_id=a.id
+               WHERE session.league_id=p.league_id AND session.status='active'
+               AND session.expires_at>clock_timestamp() AND session.configuration->'channelIds' ? $4::text
+             )) ORDER BY p.agent_id`,
+            [listener.leagueId, c.member_pubkeys, e.pubkey, input.channelId],
           )
         ).rows;
         for (const r of recipients) {
           if (
             c.kind !== "dm" &&
+            !broadcast &&
             !tag(e, "p").includes(r.pubkey) &&
             parent?.author_pubkey !== r.pubkey
           )
@@ -554,6 +668,12 @@ export class BuzzArchiveService {
             )
           ).rows[0];
           if (ingress.mode !== "poll") continue; // ACP owns wakeups; canonical relay events may still be archived.
+          const eligibility = await conversationDeliveryEligibleTx(tx, {
+            leagueId: listener.leagueId,
+            agentId: r.agent_id,
+            eventId: e.id,
+          });
+          if (!eligibility.eligible) continue;
           const job = await this.runtime.ingestEventTx(tx, {
             agentId: r.agent_id,
             causalId: `buzz:${listener.leagueId}:${e.id}`,
@@ -570,12 +690,24 @@ export class BuzzArchiveService {
               synthetic: listener.mode === "mock",
               sourceCreatedAt: e.created_at,
               contentTrust: "untrusted participant message",
+              routing: broadcast
+                ? "human-channel-broadcast"
+                : c.kind === "dm"
+                  ? "direct-message"
+                  : "targeted-channel",
             },
           });
           await tx.query(
             "INSERT INTO buzz_inbound_deliveries(league_id,event_id,agent_id,inbox_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
             [listener.leagueId, e.id, r.agent_id, job.id],
           );
+          await admitConversationDeliveryTx(tx, {
+            leagueId: listener.leagueId,
+            agentId: r.agent_id,
+            eventId: e.id,
+            jobId: job.id,
+            expectedSessionId: eligibility.sessionId,
+          });
           delivered++;
         }
         await tx.query(

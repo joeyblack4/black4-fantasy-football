@@ -1,0 +1,42 @@
+{
+  "scope": "isolated synthetic deployment; no model requests or public sends",
+  "checkedAt": "2026-09-08T01:39:39.129Z",
+  "project": "black4-football-validation",
+  "checks": {
+    "apiHealthy": true,
+    "loopbackOnly": true,
+    "noDatabaseHostPort": true,
+    "encryptedRestoreExactRow": true,
+    "nonemptyRestoreRejected": true,
+    "hashMismatchRejected": true,
+    "tamperAuthenticationBeforeWrites": true,
+    "functionOnlyTargetRejected": true
+  },
+  "offDeviceBackup": "pending: recipient custody and remote destination not configured",
+  "imageId": "sha256:65f6bec6fe4645d7a4032c3bffaedd6d735ad589cae32f59e4fa688311734345",
+  "postgresVersion": "16.15 (Debian 16.15-1.pgdg12+2)",
+  "archiveBytes": 163384,
+  "archiveSha256": "3ab319af3f606707d9be078f687764dbf1b18e15847f6d667fc63297d7c4d0a6",
+  "fixtureCleanup": "completed: unique probe, restore databases, temporary archive and test-only age key removed",
+  "validationStackCleanup": "completed: only black4-football-validation containers, network and named volume removed",
+  "sourceSha256": {
+    "compose.live.yml": "bbb29ed69da0c3658a38ea1b5dfe0702b315d2407fe72c801c441460218069c6",
+    "deploy/Dockerfile": "dc7f7d68c02b756cc77cc34181cea29e94d8ba8355d788d09c5907669e6607f9",
+    "deploy/Dockerfile.dockerignore": "447ff51b25e952c2b91596e2ec1df01671d87ea17c11f0e8d01e91dc32638431",
+    "deploy/container-entrypoint.mjs": "7fc9dacb617dc6202ef153c38645422f10265115120381ef8b46d506fc3e41b5",
+    "deploy/verify-local.mjs": "6d68bd8cae2589d58a0b389e850d54883353a7125c6af7ae8beac08a12da7bbc",
+    "scripts/backup-lib.mjs": "75d0a736b7ebae057247b289e4d30e6bc5314da61a99e09b7a5509d977b8d864",
+    "scripts/backup.mjs": "37a8318c3b7eae7a2896196de22ec5cea1f0afe4711f6b6ee11c3c88e4ca8131",
+    "scripts/backup-copy.mjs": "edca1b688c8885a7916b135c15758d142848d2fa2e8069df84b16d9b1a1607cf",
+    "scripts/restore-backup.mjs": "cb47480019a4a8836c2519386ad434924ea0a31ae9949d6d967d6617a7157b40",
+    "scripts/supervise-local.mjs": "4a930831a204b31cae72bc9f5629889cd1a767597cd83cd2c49e6eec138621f2"
+  },
+  "remoteCopyTested": false,
+  "postValidationChanges": [
+    {
+      "change": "Container/supervisor dedicated secret namespace aligned to B4_LEAGUE_*; init also writes private database-url.host; optional host bridge Compose override added",
+      "verification": "TypeScript, JavaScript syntax, private-secret initialization and Compose merged config checked; stack not restarted",
+      "historicalImageAndSourceHashes": "Describe the earlier measured default stack, prior to these configuration-only changes"
+    }
+  ]
+}

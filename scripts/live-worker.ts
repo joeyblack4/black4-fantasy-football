@@ -1,3 +1,4 @@
+import { ConversationRuntime } from "../src/runtime/conversation.js";
 import { buildOwnerRuntimeStatus } from "../src/runtime/owner-status.js";
 import { RehearsalRuntime } from "../src/runtime/rehearsal.js";
 import { OwnerStageRuntime } from "../src/runtime/owner-stage.js";
@@ -64,9 +65,34 @@ const model = manifest.document.model,
 if (!key)
   throw new Error("Manifest's dedicated inference secret is unavailable.");
 const canary = process.argv.includes("--canary");
+const conversationMode = process.argv.includes("--conversation");
+const conversationSessionId = conversationMode
+  ? process.env.FOOTBALL_CONVERSATION_SESSION_ID
+  : undefined;
+if (
+  conversationMode &&
+  (canary ||
+    !conversationSessionId ||
+    !/^[a-f0-9-]{36}$/.test(conversationSessionId))
+)
+  throw Error("EXPLICIT_CONVERSATION_SESSION_REQUIRED");
+const conversationRuntime = new ConversationRuntime(db);
+if (conversationMode) {
+  const row = (
+    await db.query(
+      "SELECT 1 FROM runtime_conversation_sessions s JOIN runtime_conversation_owners o ON o.session_id=s.id WHERE s.id=$1 AND s.league_id=$2 AND o.agent_id=$3 AND s.status='active' AND s.expires_at>clock_timestamp()",
+      [
+        conversationSessionId,
+        manifest.document.leagueId,
+        manifest.document.agentId,
+      ],
+    )
+  ).rowCount;
+  if (!row) throw Error("CONVERSATION_WORKER_SCOPE_CLOSED");
+}
 const firecrawlConfigPath = process.env.FOOTBALL_FIRECRAWL_CONFIG_FILE;
 const firecrawlBudget =
-  !canary && firecrawlConfigPath
+  !canary && !conversationMode && firecrawlConfigPath
     ? JSON.parse(await readFile(firecrawlConfigPath, "utf8"))
     : undefined;
 const firecrawl = firecrawlBudget
@@ -129,6 +155,7 @@ const driver = new OpenRouterDriver(model, {
   repairInvalidResponses: !canary,
   webSearch:
     !canary &&
+    !conversationMode &&
     !firecrawl &&
     process.env.FOOTBALL_SERVER_SEARCH_ENABLED === "true",
   requireCanaryToolChoice:
@@ -174,6 +201,39 @@ const driver = new OpenRouterDriver(model, {
       leagueId: bound.league_id,
       teamId: bound.team_id,
     };
+    if (conversationMode) {
+      const conversation = await conversationRuntime.context(job);
+      if (conversation.sessionId !== conversationSessionId)
+        throw Error("CONVERSATION_WORKER_SCOPE_CHANGED");
+      const heldRehearsal = await rehearsal.context(agentId);
+      const { instruction: _draftInstruction, ...rulesReference } =
+        heldRehearsal?.preparedRules ?? {};
+      return {
+        conversation,
+        franchise: await franchises.snapshot(actor),
+        buzzWorkspace: await buildBuzzOwnerContext(db, agentId),
+        footballState: {
+          execution: "held",
+          preparedRules: { ...rulesReference, referenceOnly: true },
+          host: heldRehearsal?.host ?? null,
+          publicationAllowed: false,
+        },
+        ownerRuntimeStatus: await buildOwnerRuntimeStatus(db, job, {
+          manifestId: manifest.id,
+          maxOutputTokens,
+          maxCallsPerTurn: 6,
+          requestTimeoutMs: 300000,
+          turnReservationMicros: reservationMicros,
+          reasoningEffort: null,
+          firecrawlConfigured: false,
+          serverSearchEnabled: false,
+          mflWritesEnabled: false,
+          ...(process.env.FOOTBALL_HARNESS_PATCH_RECEIPT
+            ? { patchReceiptId: process.env.FOOTBALL_HARNESS_PATCH_RECEIPT }
+            : {}),
+        }),
+      };
+    }
     const host = await getFootballHost(db, bound.league_id);
     const meetingContext = await convention.context(agentId, undefined, job);
     const ownerStage = await ownerStageRuntime.context(agentId);
@@ -275,20 +335,23 @@ try {
   while (!stopped) {
     const allowedAgentIds = bindings.map((b) => b.id);
     if (!canary) {
-      await convention.tick(leagueIds[0]);
+      if (!conversationMode) await convention.tick(leagueIds[0]);
       // Drain durable outcomes before spending on another owner turn.
       for (let n = 0; n < 10; n++) {
         const franchise = await franchiseOutbox.dispatchOne(
           "franchise-" + process.pid,
           { allowedAgentIds, leaseMs: 180000 },
         );
-        const football = await outbox.dispatchOne("football-" + process.pid, {
-          allowedAgentIds,
-          leaseMs: 180000,
-        });
+        const football = conversationMode
+          ? { status: "idle" }
+          : await outbox.dispatchOne("football-" + process.pid, {
+              allowedAgentIds,
+              leaseMs: 180000,
+            });
         if (franchise.status === "idle" && football.status === "idle") break;
       }
       if (
+        !conversationMode &&
         !(await ownerStageRuntime.mayInfer(bindings[0]!.id, reservationMicros))
       ) {
         if (process.argv.includes("--once")) break;
@@ -301,12 +364,14 @@ try {
       maxCostMicros: reservationMicros,
       allowedAgentIds,
       onlyCanaryJobId,
+      conversationSessionId,
     });
     if (!canary) {
-      await outbox.dispatchOne("football-" + process.pid, {
-        allowedAgentIds,
-        leaseMs: 180000,
-      });
+      if (!conversationMode)
+        await outbox.dispatchOne("football-" + process.pid, {
+          allowedAgentIds,
+          leaseMs: 180000,
+        });
       await franchiseOutbox.dispatchOne("franchise-" + process.pid, {
         allowedAgentIds,
         leaseMs: 180000,

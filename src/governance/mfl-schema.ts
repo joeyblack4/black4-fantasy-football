@@ -174,3 +174,12 @@ export const RevalidateMflReturnSchema = z
     rehearsalEpoch: id,
   })
   .strict();
+
+/** A constitution authored during the existing trial retains its own host-bound votes. */
+export const RevalidateMflTrialDecisionSchema =
+  RevalidateMflReturnSchema.extend({
+    decisionId: z.uuid(),
+    proposalId: id,
+    proposalHash: sha,
+    menuHash: sha,
+  }).strict();

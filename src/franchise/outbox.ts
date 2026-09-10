@@ -1,3 +1,7 @@
+import {
+  conversationFranchisePredicate,
+  assertConversationFranchise,
+} from "../runtime/conversation.js";
 import { assertOwnerStageAction } from "../runtime/owner-stage.js";
 import { assertOwnerStageIntroReplacement } from "../runtime/owner-stage-disposition.js";
 import { RuntimeError } from "../runtime/index.js";
@@ -48,6 +52,7 @@ export async function enqueueFranchise(
         action,
       });
   }
+  await assertConversationFranchise(tx, job.id, job.agentId, action);
   const hash = fingerprint({
     leagueId: binding.league_id,
     teamId: binding.team_id,
@@ -142,10 +147,21 @@ export class FranchiseOutbox {
       "INVALID_SCOPE",
     );
     return transaction(this.db, async (tx) => {
+      const candidate = (
+        await tx.query(
+          `SELECT o.id,o.league_id FROM runtime_franchise_outbox o WHERE ($1::text[] IS NULL OR o.agent_id=ANY($1::text[])) AND ${conversationFranchisePredicate("o")} AND o.status IN ('pending','running') AND o.next_attempt_at<=clock_timestamp() AND (o.status='pending' OR o.lease_until<=clock_timestamp()) ORDER BY o.next_attempt_at,o.id LIMIT 1`,
+          [allowedAgentIds ?? null],
+        )
+      ).rows[0];
+      if (!candidate) return null;
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,7044))",
+        [candidate.league_id],
+      );
       const row = (
         await tx.query(
-          "SELECT * FROM runtime_franchise_outbox WHERE ($1::text[] IS NULL OR agent_id=ANY($1::text[])) AND status IN ('pending','running') AND next_attempt_at<=clock_timestamp() AND (status='pending' OR lease_until<=clock_timestamp()) ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT 1",
-          [allowedAgentIds ?? null],
+          `SELECT o.* FROM runtime_franchise_outbox o WHERE o.id=$1 AND ${conversationFranchisePredicate("o")} AND o.status IN ('pending','running') AND o.next_attempt_at<=clock_timestamp() AND (o.status='pending' OR o.lease_until<=clock_timestamp()) FOR UPDATE SKIP LOCKED`,
+          [candidate.id],
         )
       ).rows[0];
       if (!row) return null;
@@ -199,7 +215,17 @@ export class FranchiseOutbox {
   }
   async execute(claim: FranchiseClaim): Promise<FranchiseReceipt> {
     const context = await transaction(this.db, async (tx) => {
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,7044))",
+        [claim.league_id],
+      );
       const row = await this.check(tx, claim);
+      const conversationAuthority = await assertConversationFranchise(
+        tx,
+        row.job_id,
+        row.agent_id,
+        row.action,
+      );
       const binding = (
         await tx.query(
           "SELECT b.*,t.owner_id,t.kind,a.enabled,a.kind AS runtime_kind FROM runtime_bindings b JOIN league_teams t ON t.league_id=b.league_id AND t.id=b.team_id JOIN runtime_agents a ON a.id=b.agent_id WHERE b.agent_id=$1",
@@ -208,7 +234,7 @@ export class FranchiseOutbox {
       ).rows[0];
       guard(
         binding &&
-          binding.enabled &&
+          (binding.enabled || conversationAuthority) &&
           binding.kind === "ai" &&
           binding.runtime_kind === "ai" &&
           binding.league_id === row.league_id &&

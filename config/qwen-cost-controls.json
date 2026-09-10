@@ -1,0 +1,42 @@
+{
+  "model": {
+    "sessionTokenLimit": 200000,
+    "maxSessionTurns": 40,
+    "maxToolCallsPerTurn": 25,
+    "maxSubagentDepth": 1,
+    "skipLoopDetection": false,
+    "skipNextSpeakerCheck": true,
+    "chatCompression": {
+      "maxRecentFilesToRetain": 2,
+      "maxRecentImagesToRetain": 0
+    },
+    "generationConfig": {
+      "samplingParams": {
+        "max_tokens": 2048
+      }
+    }
+  },
+  "context": {
+    "autoCompactThreshold": 0.15,
+    "clearContextOnIdle": {
+      "toolResultsThresholdMinutes": 10,
+      "toolResultsNumToKeep": 3,
+      "toolResultsTotalCharsThreshold": 100000
+    }
+  },
+  "memory": {
+    "enableManagedAutoMemory": false,
+    "enableManagedAutoDream": false,
+    "enableAutoSkill": false
+  },
+  "permissions": {
+    "deny": [
+      "agent",
+      "list_agents"
+    ]
+  },
+  "general": {
+    "disableAutoUpdate": true
+  },
+  "$version": 4
+}

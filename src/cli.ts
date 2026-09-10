@@ -1,9 +1,12 @@
 import { readFile } from "node:fs/promises";
-import { LeagueClient } from "./client.js";
+import { LeagueClient, LeagueClientError } from "./client.js";
+import { z } from "zod";
+import { MflOwnerActionSchema, MflOwnerReadSchema } from "./mfl/contracts.js";
+import { nativeScheduleCommandSchema } from "./runtime/native-schedules.js";
 const [action, arg, ...rest] = process.argv.slice(2);
 if (!action || action === "help") {
   console.log(
-    "Black4 league CLI\n  me\n  state LEAGUE_ID\n  operations\n  agent AGENT_ID\n  command FILE.json\n  schedule AGENT_ID FILE.json\n  message AGENT_ID FILE.json\nSet FOOTBALL_API_TOKEN and optionally FOOTBALL_API_URL. Use - as file for stdin.",
+    "Black4 league CLI\n  me\n  state LEAGUE_ID\n  operations\n  schedules [ID]\n  schedule-command JSON_OR_FILE\n  schedule-health (commissioner)\n  football-host\n  mfl-read JSON_OR_FILE\n  mfl-command JSON_OR_FILE\n  mfl-reconcile JSON_OR_FILE\n  agent AGENT_ID\n  command FILE.json\n  schedule AGENT_ID FILE.json\n  message AGENT_ID FILE.json\nSet FOOTBALL_API_TOKEN and optionally FOOTBALL_API_URL. Use - as file for stdin.",
   );
 } else {
   try {
@@ -23,17 +26,71 @@ if (!action || action === "help") {
       }
       return JSON.parse(Buffer.concat(chunks).toString("utf8"));
     };
+    const mflInput = async () => {
+      if (arg?.trimStart().startsWith("{")) return JSON.parse(arg);
+      return input(arg);
+    };
+    const key = z.string().min(1).max(160);
     const id = () => {
       if (!arg) throw new Error("ID is required.");
       return encodeURIComponent(arg);
     };
     let result: unknown;
     switch (action) {
+      case "season-health":
+        result = await client.request("GET", "/v1/operations/season");
+        break;
+      case "schedules":
+        result = await client.request(
+          "GET",
+          "/v1/owner/schedules" + (arg ? "?id=" + encodeURIComponent(arg) : ""),
+        );
+        break;
+      case "schedule-command":
+        result = await client.request(
+          "POST",
+          "/v1/owner/schedules",
+          nativeScheduleCommandSchema.parse(await mflInput()),
+        );
+        break;
+      case "schedule-health":
+        result = await client.request("GET", "/v1/operations/schedules");
+        break;
       case "me":
         result = await client.request("GET", "/v1/me");
         break;
       case "state":
         result = await client.request("GET", "/v1/leagues/" + id());
+        break;
+      case "football-host":
+        result = await client.request("GET", "/v1/football/status");
+        break;
+      case "mfl-read":
+        result = await client.request(
+          "POST",
+          "/v1/football/read",
+          MflOwnerReadSchema.parse(await mflInput()),
+        );
+        break;
+      case "mfl-command":
+        result = await client.request(
+          "POST",
+          "/v1/football/commands",
+          z
+            .object({ idempotencyKey: key, action: MflOwnerActionSchema })
+            .strict()
+            .parse(await mflInput()),
+        );
+        break;
+      case "mfl-reconcile":
+        result = await client.request(
+          "POST",
+          "/v1/football/reconcile",
+          z
+            .object({ idempotencyKey: key })
+            .strict()
+            .parse(await mflInput()),
+        );
         break;
       case "operations":
         result = await client.request("GET", "/v1/operations");
@@ -63,7 +120,18 @@ if (!action || action === "help") {
     }
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(
+      error instanceof LeagueClientError
+        ? JSON.stringify({
+            status: error.status,
+            error: error.code,
+            message: error.message,
+            details: error.details,
+          })
+        : error instanceof Error
+          ? error.message
+          : String(error),
+    );
     process.exitCode = 1;
   }
 }

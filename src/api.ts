@@ -32,6 +32,9 @@ import {
   LeagueError,
 } from "./league/index.js";
 import { RuntimeStore, RuntimeError } from "./runtime/index.js";
+import { NativeSchedules } from "./runtime/native-schedules.js";
+import { seasonInfrastructureHealth } from "./season-health.js";
+import { assertNoConversationSession } from "./runtime/conversation.js";
 import { ScheduleSchema, MessageSchema } from "./runtime/worker.js";
 import {
   GovernanceService,
@@ -87,7 +90,9 @@ export function createApiServer(
       await lock.query("SELECT pg_advisory_lock(hashtextextended($1,7044))", [
         actor.leagueId,
       ]);
-      return await work(await mflLoader(db, actor.leagueId));
+      return await work(
+        await mflLoader(db, actor.leagueId, { leagueLock: lock }),
+      );
     } finally {
       await lock.query("SELECT pg_advisory_unlock(hashtextextended($1,7044))", [
         actor.leagueId,
@@ -96,6 +101,7 @@ export function createApiServer(
     }
   }
   const league = new LeagueService(db),
+    nativeSchedules = new NativeSchedules(db),
     runtime = new RuntimeStore(db),
     governance = new GovernanceService(db),
     scoreboard = new ScoreboardService(db),
@@ -124,6 +130,7 @@ export function createApiServer(
     return row;
   }
   return createServer(async (req, res) => {
+    let releaseMutationLock: (() => Promise<void>) | undefined;
     res.setHeader("cache-control", "no-store");
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("referrer-policy", "no-referrer");
@@ -169,6 +176,57 @@ export function createApiServer(
         return res.end(data);
       }
       const actor = await authenticate(db, req.headers.authorization);
+      // Share the session-transition lock for the whole mutation, including
+      // upstream writes. Opening conversation mode waits for prior requests.
+      if (
+        req.method === "POST" &&
+        !["/v1/football/read", "/v1/football/reconcile"].includes(url.pathname)
+      ) {
+        const lock = await db.connect();
+        releaseMutationLock = async () => {
+          try {
+            await lock.query(
+              "SELECT pg_advisory_unlock_shared(hashtextextended($1,7060))",
+              [actor.leagueId],
+            );
+          } finally {
+            lock.release();
+          }
+        };
+        await lock.query(
+          "SELECT pg_advisory_lock_shared(hashtextextended($1,7060))",
+          [actor.leagueId],
+        );
+        await assertNoConversationSession(lock, actor.leagueId);
+      }
+      if (url.pathname === "/v1/owner/schedules") {
+        if (req.method === "GET")
+          return reply(
+            res,
+            200,
+            await nativeSchedules.read(actor, {
+              id: url.searchParams.get("id") ?? undefined,
+            }),
+          );
+        if (req.method === "POST")
+          return reply(
+            res,
+            200,
+            await nativeSchedules.command(actor, await body(req)),
+          );
+      }
+      if (req.method === "GET" && url.pathname === "/v1/operations/schedules") {
+        requireCommissioner(actor);
+        return reply(res, 200, await nativeSchedules.health(actor.leagueId));
+      }
+      if (req.method === "GET" && url.pathname === "/v1/operations/season") {
+        requireCommissioner(actor);
+        return reply(
+          res,
+          200,
+          await seasonInfrastructureHealth(db, actor.leagueId),
+        );
+      }
       if (req.method === "GET" && url.pathname === "/v1/football/models") {
         const registry = new ManifestRegistry(db);
         const manifests = (
@@ -540,6 +598,30 @@ export function createApiServer(
         await binding(actor, agentId, req.method === "POST");
         if (req.method === "GET" && !agentPath[2])
           return reply(res, 200, await runtime.agentSnapshot(agentId));
+        if (
+          req.method === "POST" &&
+          agentPath[2] === "appointments" &&
+          (await hostBinding(db, actor.leagueId)).host === "mfl"
+        ) {
+          const input = ScheduleSchema.parse(await body(req));
+          return reply(
+            res,
+            200,
+            await nativeSchedules.command(actor, {
+              operation: "create",
+              idempotencyKey: input.causalId,
+              label:
+                typeof input.payload.label === "string"
+                  ? input.payload.label
+                  : "Owner appointment",
+              prompt:
+                typeof input.payload.prompt === "string"
+                  ? input.payload.prompt
+                  : JSON.stringify(input.payload),
+              timing: { kind: "once", at: input.dueAt },
+            }),
+          );
+        }
         if (req.method === "POST" && agentPath[2] === "appointments")
           return reply(
             res,
@@ -614,6 +696,7 @@ export function createApiServer(
       if (error instanceof MflError)
         return reply(res, error.code === "MFL_AUTH_REQUIRED" ? 503 : 409, {
           error: error.code,
+          ...(error.details ? { details: error.details } : {}),
         });
       if (error instanceof z.ZodError)
         return reply(res, 400, {
@@ -655,6 +738,8 @@ export function createApiServer(
         message:
           "Request failed; no success receipt was returned. Retry only with the same idempotency key.",
       });
+    } finally {
+      await releaseMutationLock?.();
     }
   });
 }

@@ -1,3 +1,4 @@
+import { HarnessSelectionSchema } from "./harness-assignment.js";
 import {
   GovernanceActionSchema,
   BuzzChannelActionSchema,
@@ -44,8 +45,10 @@ export const StaffDecisionSchema = z
     summary: z.string().max(8000),
   })
   .strict();
+const CostEvidenceIdSchema = z.string().min(1).max(200).optional();
 export const StaffDriverResultSchema = StaffDecisionSchema.extend({
   costMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  costEvidenceId: CostEvidenceIdSchema,
 });
 export const ActionSchema = z.discriminatedUnion("type", [
   BuzzChannelActionSchema,
@@ -73,6 +76,7 @@ export const DriverResultSchema = z
   .object({
     actions: z.array(ActionSchema).max(10),
     costMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    costEvidenceId: CostEvidenceIdSchema,
     summary: z.string().max(8000),
   })
   .strict();
@@ -104,8 +108,19 @@ export async function runOne(
     heartbeat?: boolean;
     allowedAgentIds?: string[];
     onlyCanaryJobId?: string;
+    conversationSessionId?: string;
+    /** Requests transport/process-tree cancellation; incurred costs still settle. */
+    signal?: AbortSignal;
   } = {},
 ): Promise<RunResult> {
+  const harness =
+    driver.harnessId !== undefined || driver.configDigest !== undefined
+      ? HarnessSelectionSchema.parse({
+          harnessId: driver.harnessId,
+          configDigest: driver.configDigest,
+        })
+      : undefined;
+  if (options.signal?.aborted) return { status: "idle" };
   const leaseMs = options.leaseMs ?? 30000;
   const job = await store.claim(
     workerId,
@@ -113,8 +128,15 @@ export async function runOne(
     driver.model,
     options.allowedAgentIds,
     options.onlyCanaryJobId,
+    options.conversationSessionId,
+    harness,
   );
   if (!job) return { status: "idle" };
+  const cancellation = new AbortController();
+  const callerAbort = () =>
+    cancellation.abort(new RuntimeError("WORKER_ABORTED"));
+  options.signal?.addEventListener("abort", callerAbort, { once: true });
+  if (options.signal?.aborted) callerAbort();
   let reservationId: string | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let lostLease = false;
@@ -123,11 +145,14 @@ export async function runOne(
   let started = 0;
   let returned = false;
   let observedCostMicros: number | undefined;
+  let finished = false;
   try {
+    cancellation.signal.throwIfAborted();
     if (driver.model !== job.model)
       throw new KnownZeroCostError("MODEL_PIN_VIOLATION");
     if (!driver.synthetic) await store.requireLiveBinding(job.agentId);
     reservationId = await store.reserve(job, options.maxCostMicros ?? 0);
+    cancellation.signal.throwIfAborted();
     if (options.heartbeat !== false)
       timer = setInterval(
         () => {
@@ -136,7 +161,9 @@ export async function runOne(
           void store
             .heartbeat(job, leaseMs)
             .catch(() => {
+              if (finished) return;
               lostLease = true;
+              cancellation.abort(new RuntimeError("STALE_CLAIM"));
             })
             .finally(() => {
               heartbeatBusy = false;
@@ -146,7 +173,9 @@ export async function runOne(
       );
     invoked = true;
     started = performance.now();
-    const raw = await driver.run(job);
+    // Await transport termination rather than racing abort against the promise:
+    // a late verified charge must remain observable even after cancellation.
+    const raw = await driver.run(job, { signal: cancellation.signal });
     returned = true;
     await store.recordExecution(job, {
       driver: driver.name,
@@ -156,7 +185,15 @@ export async function runOne(
     });
     if (Number.isSafeInteger(raw?.costMicros) && raw.costMicros >= 0) {
       observedCostMicros = raw.costMicros;
-      await store.observeCost(job, reservationId, raw.costMicros);
+      // Preserve known spend even if the optional evidence field later fails
+      // result validation; only bounded trusted adapter evidence enters receipts.
+      const evidence = CostEvidenceIdSchema.safeParse(raw.costEvidenceId);
+      await store.observeCost(
+        job,
+        reservationId,
+        raw.costMicros,
+        evidence.success ? evidence.data : undefined,
+      );
       if (raw.costMicros > (options.maxCostMicros ?? 0)) {
         await store.settleOverrun(job, reservationId, raw.costMicros);
         return {
@@ -171,6 +208,7 @@ export async function runOne(
         ? StaffDriverResultSchema.parse(raw)
         : DriverResultSchema.parse(raw);
     if (lostLease) throw new RuntimeError("STALE_CLAIM");
+    cancellation.signal.throwIfAborted();
     await store.complete(job, {
       ...result,
       reservationId,
@@ -179,7 +217,13 @@ export async function runOne(
     });
     return { status: "completed", jobId: job.id };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = lostLease
+      ? "STALE_CLAIM"
+      : cancellation.signal.aborted
+        ? "WORKER_ABORTED"
+        : error instanceof Error
+          ? error.message
+          : String(error);
     if (invoked && !returned)
       await store.recordExecution(job, {
         driver: driver.name,
@@ -210,14 +254,20 @@ export async function runOne(
         };
       }
     }
-    if (error instanceof RuntimeError && error.code === "STALE_CLAIM")
+    if (
+      lostLease ||
+      (error instanceof RuntimeError && error.code === "STALE_CLAIM")
+    )
       return { status: "stale", jobId: job.id, error: message };
     try {
       await store.fail(job, message, {
         retryable:
-          error instanceof KnownZeroCostError ||
-          error instanceof RetryableUnknownCostError,
-        chargeKnownZero: !invoked || error instanceof KnownZeroCostError,
+          !cancellation.signal.aborted &&
+          (error instanceof KnownZeroCostError ||
+            error instanceof RetryableUnknownCostError),
+        chargeKnownZero:
+          !invoked ||
+          (!cancellation.signal.aborted && error instanceof KnownZeroCostError),
         reservationId,
         observedCostMicros,
       });
@@ -228,6 +278,8 @@ export async function runOne(
     }
     return { status: "failed", jobId: job.id, error: message };
   } finally {
+    finished = true;
+    options.signal?.removeEventListener("abort", callerAbort);
     if (timer) clearInterval(timer);
   }
 }

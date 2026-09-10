@@ -420,3 +420,71 @@ it("rolls back an AI observer wake when the rehearsal is no longer armed", async
     (await f.db.query("SELECT 1 FROM runtime_rehearsal_jobs")).rowCount,
   ).toBe(0);
 });
+
+async function configureNative() {
+  await f.db.query(
+    "INSERT INTO buzz_league_bindings(league_id,community_url,mode,binding_receipt_id,archive_consent_receipt_id,configuration_hash) VALUES($1,'wss://black4fantasysports.communities.buzz.xyz','mock','fixture','fixture','fixture')",
+    [leagueId],
+  );
+  for (let i = 0; i < 3; i++)
+    await f.db.query(
+      "INSERT INTO buzz_participants(league_id,pubkey,owner_id,team_id,owner_pubkey,kind) VALUES($1,$2,$3,$4,$5,$6)",
+      [
+        leagueId,
+        String(i + 1).repeat(64),
+        `owner${i}`,
+        `team${i}`,
+        "f".repeat(64),
+        i === 2 ? "human" : "agent",
+      ],
+    );
+  await observer.configure(commissioner, {
+    epoch: "native-test",
+    expectedHostVersion: 1,
+    synthetic: true,
+    deliveryMode: "native-buzz",
+  });
+}
+it("native observer queues one on-clock notice, never generic cognition, and confirms completed picks once", async () => {
+  await configureNative();
+  expect((await observer.poll(commissioner)).status).toBe("queued");
+  await observer.poll(commissioner);
+  expect(
+    (await f.db.query("SELECT * FROM runtime_native_draft_notifications"))
+      .rowCount,
+  ).toBe(1);
+  expect((await f.db.query("SELECT * FROM runtime_jobs")).rowCount).toBe(0);
+  state.completed = [{ round: 1, pick: 1, franchise: "0001", player: "12345" }];
+  state.pick = 2;
+  state.franchise = "0002";
+  await observer.poll(commissioner);
+  await observer.poll(commissioner);
+  const notices = (
+    await f.db.query("SELECT kind FROM runtime_native_draft_notifications")
+  ).rows;
+  expect(notices.filter((n) => n.kind === "pick-confirmed")).toHaveLength(1);
+  expect(notices.filter((n) => n.kind === "on-clock")).toHaveLength(2);
+});
+it("native manual pause suppresses polls and resume requires fresh observation with one new wake", async () => {
+  await configureNative();
+  await observer.poll(commissioner);
+  await observer.setPaused(commissioner, true, "Joey requested a pause");
+  expect((await observer.poll(commissioner)).status).toBe("held");
+  await observer.setPaused(commissioner, false, "Ready again");
+  expect(
+    (
+      await f.db.query(
+        "SELECT last_observed_at FROM runtime_mfl_draft_observers",
+      )
+    ).rows[0].last_observed_at,
+  ).toBeNull();
+  await observer.poll(commissioner);
+  await observer.poll(commissioner);
+  expect(
+    (
+      await f.db.query(
+        "SELECT * FROM runtime_native_draft_notifications WHERE kind='on-clock'",
+      )
+    ).rowCount,
+  ).toBe(2);
+});

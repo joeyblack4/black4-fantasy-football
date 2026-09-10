@@ -610,3 +610,256 @@ it("event lookup cannot reveal an event through a different authorized channel o
     service.event(owner(1), { leagueId, channelId: room, eventId: "123" }),
   ).rejects.toThrow();
 });
+
+const broadcastPolicy = () => ({
+  leagueId,
+  channelId: humanRoom,
+  enabled: true,
+  expectedVersion: 0,
+  idempotencyKey: "synthetic-broadcast-enable",
+  reason: "SYNTHETIC human channel announcement opt-in",
+});
+async function broadcastRoom() {
+  await service.registerChannel(commissioner, {
+    leagueId,
+    channelId: humanRoom,
+    memberPubkeys: pubkeys.slice(0, 3),
+    receiptId: "synthetic-broadcast-members",
+  });
+  return service.configureHumanBroadcast(commissioner, broadcastPolicy());
+}
+function humanPost(text: string, at: number, extraTags: string[][] = []) {
+  return event(text, {
+    pubkey: pubkeys[2],
+    created_at: at,
+    tags: [["h", humanRoom], ...extraTags],
+  });
+}
+const ingestHuman = (events: BuzzEvent[], i = 0) =>
+  service.ingestBatch(listener(i), {
+    channelId: humanRoom,
+    memberPubkeys: pubkeys.slice(0, 3),
+    events,
+    complete: true,
+  });
+it("SYNTHETIC human broadcast is opt-in, fresh, same-channel and deduplicated across listeners", async () => {
+  await service.registerChannel(commissioner, {
+    leagueId,
+    channelId: humanRoom,
+    memberPubkeys: pubkeys.slice(0, 3),
+    receiptId: "synthetic",
+  });
+  const old = humanPost("before opt-in", Math.floor(Date.now() / 1000) - 5);
+  expect((await ingestHuman([old])).delivered).toBe(0);
+  const configured = await service.configureHumanBroadcast(
+    commissioner,
+    broadcastPolicy(),
+  );
+  const at = Number(configured.policy.effective_after_seconds);
+  expect((await ingestHuman([old])).delivered).toBe(0);
+  expect(
+    (await ingestHuman([humanPost("freshly observed older history", at - 1)]))
+      .delivered,
+  ).toBe(0);
+  const post = humanPost("whole channel", at);
+  const receipts = await Promise.all([
+    ingestHuman([post]),
+    ingestHuman([post], 1),
+  ]);
+  expect(receipts.reduce((n, r) => n + r.delivered, 0)).toBe(2);
+  const jobs = (
+    await f.db.query(
+      "SELECT agent_id,payload FROM runtime_jobs ORDER BY agent_id",
+    )
+  ).rows;
+  expect(jobs.map((j) => j.agent_id)).toEqual(["agent-0", "agent-1"]); // agent-3 is outside this channel
+  expect(
+    jobs.every(
+      (j) =>
+        j.payload.routing === "human-channel-broadcast" &&
+        j.payload.eventId === post.id,
+    ),
+  ).toBe(true);
+  expect(
+    (await f.db.query("SELECT * FROM buzz_inbound_deliveries")).rowCount,
+  ).toBe(2);
+});
+it("SYNTHETIC explicit mentions and replies stay targeted; malformed/unknown targets never broadcast", async () => {
+  const at = Number((await broadcastRoom()).policy.effective_after_seconds);
+  const parent = event("agent parent", {
+    created_at: at,
+    tags: [["h", humanRoom]],
+  });
+  expect((await ingestHuman([parent])).delivered).toBe(0);
+  expect(
+    (await ingestHuman([humanPost("mention", at, [["p", pubkeys[1]!]])]))
+      .delivered,
+  ).toBe(1);
+  expect(
+    (
+      await ingestHuman([
+        humanPost("reply", at, [["e", parent.id, "", "reply"]]),
+      ])
+    ).delivered,
+  ).toBe(1);
+  for (const tags of [
+    [["p", "f".repeat(64)]],
+    [["p"]],
+    [["e", "f".repeat(64), "", "reply"]],
+    [["e"]],
+  ])
+    expect(
+      (await ingestHuman([humanPost(JSON.stringify(tags), at, tags)]))
+        .delivered,
+    ).toBe(0);
+  expect(
+    (
+      await f.db.query("SELECT agent_id FROM runtime_jobs ORDER BY agent_id")
+    ).rows.map((j) => j.agent_id),
+  ).toEqual(["agent-0", "agent-1"]);
+});
+it("SYNTHETIC agent posts, changes, disabled/ACP recipients and stale human ownership cannot broadcast", async () => {
+  const at = Number((await broadcastRoom()).policy.effective_after_seconds);
+  await f.db.query(
+    "UPDATE runtime_agents SET enabled=false WHERE id='agent-1'",
+  );
+  const original = humanPost("one enabled", at);
+  expect((await ingestHuman([original])).delivered).toBe(1);
+  await f.db.query(
+    "UPDATE buzz_ingress_modes SET mode='managed_acp' WHERE agent_id='agent-0'",
+  );
+  expect(
+    (await ingestHuman([humanPost("ACP owns ingress", at)])).delivered,
+  ).toBe(0);
+  expect(
+    (
+      await ingestHuman([
+        event("agent unmentioned", {
+          created_at: at,
+          tags: [["h", humanRoom]],
+        }),
+      ])
+    ).delivered,
+  ).toBe(0);
+  for (const kind of [40003, 9005, 5])
+    expect(
+      (
+        await ingestHuman([
+          event("change" + kind, {
+            pubkey: pubkeys[2],
+            kind,
+            created_at: at,
+            tags: [
+              ["h", humanRoom],
+              ["e", original.id],
+            ],
+          }),
+        ])
+      ).delivered,
+    ).toBe(0);
+  await f.db.query(
+    "UPDATE buzz_ingress_modes SET mode='poll' WHERE agent_id='agent-0'",
+  );
+  await f.db.query(
+    "UPDATE league_teams SET owner_id='replacement-human' WHERE id='team-2'",
+  );
+  expect(
+    (await ingestHuman([humanPost("old human binding", at)])).delivered,
+  ).toBe(0);
+});
+it("SYNTHETIC policy mutation requires commissioner, exact version/private channel, and replay-safe receipts", async () => {
+  await expect(
+    service.configureHumanBroadcast(commissioner, {
+      ...broadcastPolicy(),
+      channelId: room,
+    }),
+  ).rejects.toThrow("private channel");
+  await broadcastRoom();
+  await expect(
+    service.configureHumanBroadcast(owner(2), broadcastPolicy()),
+  ).rejects.toThrow();
+  await expect(
+    service.configureHumanBroadcast(
+      { ...commissioner, leagueId: "other" },
+      broadcastPolicy(),
+    ),
+  ).rejects.toThrow();
+  expect(
+    (await service.configureHumanBroadcast(commissioner, broadcastPolicy()))
+      .replayed,
+  ).toBe(true);
+  await expect(
+    service.configureHumanBroadcast(commissioner, {
+      ...broadcastPolicy(),
+      enabled: false,
+    }),
+  ).rejects.toThrow("idempotency conflict");
+  await expect(
+    service.configureHumanBroadcast(commissioner, {
+      ...broadcastPolicy(),
+      idempotencyKey: "new",
+    }),
+  ).rejects.toThrow("version conflict");
+  const disabled = await service.configureHumanBroadcast(commissioner, {
+    ...broadcastPolicy(),
+    expectedVersion: 1,
+    enabled: false,
+    idempotencyKey: "disable",
+  });
+  expect(
+    (
+      await ingestHuman([
+        humanPost(
+          "disabled policy",
+          Number(disabled.policy.effective_after_seconds),
+        ),
+      ])
+    ).delivered,
+  ).toBe(0);
+  expect(
+    (await f.db.query("SELECT * FROM buzz_human_broadcast_receipts")).rowCount,
+  ).toBe(2);
+});
+
+it("SYNTHETIC explicit scoped polling reads only the registered private channel and skips DM discovery", async () => {
+  await broadcastRoom();
+  const reads: string[] = [];
+  const report = await pollBuzzOnce(
+    service,
+    listener(),
+    async (request) => {
+      reads.push(request.command);
+      if (request.command === "members") {
+        expect(request.channelId).toBe(humanRoom);
+        return pubkeys
+          .slice(0, 3)
+          .map((pubkey) => ({ pubkey, role: "member" }));
+      }
+      if (request.command === "messages") {
+        expect(request.channelId).toBe(humanRoom);
+        return [];
+      }
+      throw Error("Unexpected unscoped request");
+    },
+    { channelIds: [humanRoom] },
+  );
+  expect(report.healthy).toBe(true);
+  expect(reads).toEqual(["members", "messages"]);
+  for (const channelIds of [
+    [],
+    [room],
+    [humanRoom, humanRoom],
+    ["33345678-1234-4234-9234-123456789abc"],
+  ]) {
+    await expect(
+      pollBuzzOnce(
+        service,
+        listener(),
+        async () => {
+          throw Error("Network should not run");
+        },
+        { channelIds },
+      ),
+    ).rejects.toThrow();
+  }
+});

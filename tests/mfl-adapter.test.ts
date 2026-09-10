@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, it, expect } from "vitest";
 import { testDb } from "./helpers.js";
 import { MflAdapter, PgMflJournal, type MflConfig } from "../src/mfl/index.js";
-import { envelope, draftState } from "../src/mfl/codec.js";
+import { envelope, liveDraftEnvelope, draftState } from "../src/mfl/codec.js";
 let f: Awaited<ReturnType<typeof testDb>>;
 const config: MflConfig = {
   leagueId: "synthetic-mfl",
@@ -72,6 +72,12 @@ function fixture() {
               private: "should not project",
             },
             { id: "17466", name: "Beck, Carson", position: "QB", team: "ARI" },
+            {
+              id: "14319",
+              name: "Synthetic eligible receiver",
+              position: "WR",
+              team: "TEST",
+            },
           ],
         },
       });
@@ -234,6 +240,21 @@ function fixture() {
       state.trades = state.trades.filter((t) => t !== trade);
     }
     if (p.get("CMD") === "DRAFT") {
+      if (mode === "draftRejected")
+        return Response.json({
+          success: "ERROR",
+          response: "Player unavailable " + secret,
+        });
+      if (mode === "draftAmbiguous")
+        return Response.json({ response: "Player unavailable " + secret });
+      if (mode === "draftMalformed") return new Response("not-json " + secret);
+      if (mode === "draftConflicting")
+        return Response.json({
+          success: "OK",
+          error: "Player unavailable " + secret,
+        });
+      if (mode === "draftAcceptedNoEffect")
+        return Response.json({ success: "OK" });
       state.drafted = true;
       return Response.json({ success: "OK" });
     }
@@ -618,4 +639,96 @@ it("receipts the native no-scoring-rules response as a configuration gap rather 
   expect((await t.adapter.read(owner, { type: "rules" })).data).toEqual({
     positionRules: [],
   });
+});
+
+it("blocks a new native draft intent before HTTP or journaling, while allowing receipt replay after pause", async () => {
+  const t = fixture();
+  let paused = true,
+    admissions = 0;
+  const adapter = new MflAdapter(config, {
+    ...t.options,
+    withDraftAdmission: async (work) =>
+      work(async () => {
+        admissions++;
+        if (paused) throw new Error("MFL_NATIVE_DRAFT_PAUSED");
+      }),
+  });
+  const action = { type: "draft", round: 1, pick: 1, playerId: "14319" };
+  await expect(adapter.execute(owner, "native-paused", action)).rejects.toThrow(
+    "MFL_NATIVE_DRAFT_PAUSED",
+  );
+  expect(t.calls).toHaveLength(0);
+  expect(await adapter.lookup(owner, "native-paused")).toBeNull();
+  paused = false;
+  const result = await adapter.execute(owner, "native-live", action);
+  expect(result.state).toBe("verified");
+  paused = true;
+  const beforeReplay = admissions;
+  expect((await adapter.execute(owner, "native-live", action)).replayed).toBe(
+    true,
+  );
+  expect(admissions).toBe(beforeReplay);
+  expect(t.calls.filter((c) => c.method === "POST")).toHaveLength(1);
+  expect((await adapter.reconcile(owner, "native-live")).state).toBe(
+    "verified",
+  );
+});
+
+it("keeps ordinary owner reads outside native draft admission", async () => {
+  const t = fixture();
+  const adapter = new MflAdapter(config, {
+    ...t.options,
+    withDraftAdmission: async () => {
+      throw Error("MFL_NATIVE_DRAFT_PAUSED");
+    },
+  });
+  await expect(adapter.read(owner, { type: "draft" })).resolves.toMatchObject({
+    teamId: owner.teamId,
+    data: { round: 1, pick: 1 },
+  });
+});
+it("provider cooldown crosses adapter scopes while private read caches remain scope-bound", async () => {
+  const journal = new PgMflJournal(f.db);
+  const key = "mfl-provider:www43.myfantasyleague.com:cooldown",
+    retryAt = new Date(Date.now() + 60000).toISOString();
+  await journal.withLock("scope-one", async (s) => {
+    await s.recordRead({ cacheKey: key, data: { retryAt } });
+    await s.recordRead({
+      cacheKey: "private-bids",
+      data: { secret: "own-only" },
+    });
+  });
+  await journal.withLock("scope-two", async (s) => {
+    expect(await s.cached(key, 60)).toEqual({ retryAt });
+    expect(await s.cached("private-bids", 60)).toBeNull();
+  });
+});
+it("global provider lock serializes requests from separate adapter scopes", async () => {
+  const journal = new PgMflJournal(f.db);
+  const seen: string[] = [];
+  await Promise.all(
+    ["first", "second"].map((scope) =>
+      journal.withLock(scope, (s) =>
+        s.withProviderLock!("mfl-provider:test", async () => {
+          seen.push(scope + ":start");
+          await new Promise((r) => setTimeout(r, 10));
+          seen.push(scope + ":end");
+        }),
+      ),
+    ),
+  );
+  expect(seen[0]?.split(":")[0]).toBe(seen[1]?.split(":")[0]);
+  expect(seen[2]?.split(":")[0]).toBe(seen[3]?.split(":")[0]);
+});
+
+it("does not verify an empty replacement solely because an unobserved round is absent", async () => {
+  const t = fixture();
+  const r = await t.adapter.execute(owner, "unobserved-round-clear", {
+    type: "replaceBids",
+    round: 99,
+    bids: [],
+  });
+  expect(r.state).toBe("rejected");
+  expect(r.reason).toBe("MFL_BID_ROUND_NOT_PENDING");
+  expect(t.calls.filter((c) => c.method === "POST")).toHaveLength(0);
 });

@@ -1,0 +1,17 @@
+#!/bin/sh
+# Buzz owns this PID and all runtime controls; exec preserves that ownership.
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ "${BUZZ_RELAY_URL:-}" != 'wss://black4fantasysports.communities.buzz.xyz' ]; then
+  echo 'Black4 franchise belongs to the fantasy community; no runtime started here.' >&2
+  exit 0
+fi
+FRANCHISE=${BUZZ_ACP_AGENT_ARGS##*,}
+case "$FRANCHISE" in
+  b4-openai|b4-anthropic|b4-google|b4-xai|b4-qwen|b4-mistral|b4-kimi|b4-meta|b4-deepseek|b4-zai|b4-minimax) ;;
+  *) echo 'Missing recognized native franchise argument' >&2; exit 2;;
+esac
+cd "$ROOT/franchises/${FRANCHISE#b4-}/workspace"
+export B4_NATIVE_WORKSPACE="$PWD"
+unset BUZZ_ACP_CHANNELS
+exec "$ROOT/.local/tooling/bin/buzz-acp" "$@"

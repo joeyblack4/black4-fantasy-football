@@ -1,4 +1,6 @@
+import { assertConversationJob } from "./conversation.js";
 import { randomUUID } from "node:crypto";
+import { hash as mflHash } from "../mfl/codec.js";
 import { z } from "zod";
 import { transaction, type Db, type Tx } from "../db.js";
 import type { Actor } from "../league/schema.js";
@@ -484,13 +486,36 @@ async function quiescent(tx: Tx, leagueId: string) {
     "REHEARSAL_OBSERVER_NOT_HELD",
   );
 }
-async function unresolvedNative(tx: Tx, row: any) {
-  return (
+async function unresolvedNative(
+  tx: Tx,
+  row: any,
+  allowRetiredTrialQuarantine = false,
+) {
+  const unresolved = (
     await tx.query(
       "SELECT * FROM (SELECT DISTINCT ON(details->>'scope',details->>'idempotencyKey') details,seq FROM runtime_receipts WHERE type='mfl_operation' AND details->>'leagueId'=$1 AND seq>$2 ORDER BY details->>'scope',details->>'idempotencyKey',seq DESC) latest WHERE details->>'state' NOT IN ('verified','rejected')",
       [row.league_id, row.start_receipt_seq],
     )
   ).rows;
+  if (!allowRetiredTrialQuarantine) return unresolved;
+  const quarantines = (
+    await tx.query(
+      "SELECT details FROM runtime_receipts WHERE type='rehearsal.native_trial_quarantined' AND details->>'leagueId'=$1 AND details->>'epoch'=$2",
+      [row.league_id, row.epoch],
+    )
+  ).rows;
+  return unresolved.filter(
+    (operation) =>
+      !quarantines.some(
+        ({ details: q }) =>
+          q.operationSeq === String(operation.seq) &&
+          q.operationHash === fingerprint(operation.details) &&
+          q.operationId === operation.details.id &&
+          q.journalState === "unknown" &&
+          q.trialHostHash === fingerprint(row.trial_host) &&
+          q.replayAuthorized === false,
+      ),
+  );
 }
 
 /** SQL alias is supplied only by runtime source, never request input. */
@@ -513,6 +538,7 @@ export async function assertRehearsalClaim(
   tx: Tx,
   job: Pick<Job, "id" | "agentId">,
 ) {
+  const conversation = await assertConversationJob(tx, job);
   const row = await jobEpoch(tx, job);
   if (!row) {
     check(
@@ -526,7 +552,10 @@ export async function assertRehearsalClaim(
     );
     return null;
   }
-  check(row.status === "armed", "REHEARSAL_NOT_ARMED");
+  check(
+    row.status === "armed" || (conversation && row.status === "stopped"),
+    "REHEARSAL_NOT_ARMED",
+  );
   const host = await hostBinding(tx, row.league_id);
   check(
     fingerprint(host) === fingerprint(row.trial_host) &&
@@ -739,7 +768,8 @@ export async function assertRehearsalBudget(tx: Tx, job: Job, amount: number) {
   );
   check(!used.unreviewed_unresolved, "REHEARSAL_COST_UNRESOLVED");
   check(
-    !(await unresolvedNative(tx, row)).length,
+    Boolean(await assertConversationJob(tx, job)) ||
+      !(await unresolvedNative(tx, row)).length,
     "REHEARSAL_NATIVE_UNRESOLVED",
   );
   check(
@@ -1410,6 +1440,164 @@ export class RehearsalRuntime {
       ).rows[0];
     });
   }
+  /** Retire one uncertain trial intent without claiming an upstream rejection or changing its journal. */
+  async quarantineRetiredTrialIntent(
+    actor: Actor,
+    input: {
+      epoch: string;
+      outboxId: string;
+      operationId: string;
+      expectedOperationSeq: string;
+      operationHash: string;
+      draftReadReceiptId: string;
+      draft: any;
+      reason: string;
+      evidenceRef: string;
+    },
+  ) {
+    authorize(actor);
+    check(
+      input.reason.length >= 10 && input.evidenceRef.length >= 8,
+      "REHEARSAL_REASON_REQUIRED",
+    );
+    return transaction(this.db, async (tx) => {
+      await lock(tx, actor.leagueId);
+      const r = (
+        await tx.query(
+          "SELECT * FROM runtime_rehearsals WHERE league_id=$1 AND epoch=$2 FOR UPDATE",
+          [actor.leagueId, input.epoch],
+        )
+      ).rows[0];
+      check(
+        r?.status === "stopped" &&
+          r.original_host.config.leagueId === "62282" &&
+          r.trial_host.config.leagueId === "46625",
+        "REHEARSAL_RETIRED_TRIAL_REQUIRED",
+      );
+      await quiescent(tx, actor.leagueId);
+      check(
+        (await owners(tx, actor.leagueId)).every((o) => !o.enabled),
+        "REHEARSAL_OWNERS_NOT_PAUSED",
+      );
+      check(
+        fingerprint(await hostBinding(tx, actor.leagueId)) ===
+          fingerprint(r.trial_host),
+        "REHEARSAL_HOST_DRIFT",
+      );
+      const o = (
+        await tx.query(
+          "SELECT o.* FROM runtime_football_outbox o JOIN runtime_rehearsal_jobs j ON j.job_id=o.job_id WHERE o.id=$1 AND j.league_id=$2 AND j.epoch=$3 FOR UPDATE OF o",
+          [input.outboxId, actor.leagueId, input.epoch],
+        )
+      ).rows[0];
+      const operation = (
+        await tx.query(
+          "SELECT seq,details FROM runtime_receipts WHERE type='mfl_operation' AND details->>'leagueId'=$1 AND details->>'idempotencyKey'=$2 ORDER BY seq DESC LIMIT 1",
+          [actor.leagueId, "runtime-football:" + input.outboxId],
+        )
+      ).rows[0];
+      check(
+        o &&
+          operation &&
+          operation.details.id === input.operationId &&
+          String(operation.seq) === input.expectedOperationSeq &&
+          fingerprint(operation.details) === input.operationHash &&
+          operation.details.state === "unknown" &&
+          operation.details.teamId === o.team_id &&
+          fingerprint(operation.details.action) ===
+            fingerprint(o.command.action) &&
+          o.command.action.type === "draft" &&
+          o.host_version === r.trial_host.version &&
+          fingerprint(o.host_identity) === fingerprint(r.trial_host.config),
+        "REHEARSAL_QUARANTINE_OPERATION_MISMATCH",
+      );
+      const prior = (
+        await tx.query(
+          "SELECT details FROM runtime_receipts WHERE type='rehearsal.native_trial_quarantined' AND details->>'leagueId'=$1 AND details->>'epoch'=$2 AND details->>'outboxId'=$3",
+          [actor.leagueId, input.epoch, input.outboxId],
+        )
+      ).rows[0];
+      if (prior) {
+        check(
+          prior.details.operationHash === input.operationHash &&
+            o.status === "dead",
+          "REHEARSAL_QUARANTINE_DRIFT",
+        );
+        return prior.details;
+      }
+      check(
+        o.status === "held" && o.attempts > 0,
+        "REHEARSAL_HELD_DISPATCH_REQUIRED",
+      );
+      const read = (
+        await tx.query(
+          "SELECT details,created_at FROM runtime_receipts WHERE type='mfl_read' AND details->>'id'=$1",
+          [input.draftReadReceiptId],
+        )
+      ).rows[0];
+      check(
+        read &&
+          read.details.scope === operation.details.scope &&
+          read.details.actorId === actor.id &&
+          read.details.actorRole === "commissioner" &&
+          read.details.request?.type === "draft" &&
+          read.details.resultHash === mflHash(input.draft) &&
+          read.created_at.getTime() >= Date.now() - 300000,
+        "REHEARSAL_FRESH_TRIAL_READ_REQUIRED",
+      );
+      const action = operation.details.action;
+      const beforePicks = operation.details.before?.picks?.filter(
+        (p: any) => p.playerId,
+      );
+      const currentPicks = input.draft.picks?.filter((p: any) => p.playerId);
+      check(
+        Array.isArray(beforePicks) &&
+          Array.isArray(currentPicks) &&
+          fingerprint(beforePicks) === fingerprint(currentPicks) &&
+          input.draft.picks.some(
+            (p: any) =>
+              p.round === action.round && p.pick === action.pick && !p.playerId,
+          ) &&
+          !currentPicks.some((p: any) => p.playerId === action.playerId),
+        "REHEARSAL_TRIAL_EFFECT_CHANGED",
+      );
+      const details = {
+        leagueId: actor.leagueId,
+        epoch: input.epoch,
+        outboxId: input.outboxId,
+        operationId: input.operationId,
+        operationSeq: input.expectedOperationSeq,
+        operationHash: input.operationHash,
+        scope: operation.details.scope,
+        idempotencyKey: operation.details.idempotencyKey,
+        journalState: "unknown",
+        disposition: "retired-trial-no-effect-observed",
+        replayAuthorized: false,
+        upstreamRejectionProven: false,
+        externalWritePerformed: false,
+        trialHostHash: fingerprint(r.trial_host),
+        draftReadReceiptId: input.draftReadReceiptId,
+        draftResultHash: read.details.resultHash,
+        preservedPicks: currentPicks.length,
+        preservedPicksHash: fingerprint(currentPicks),
+        actorId: actor.id,
+        reason: input.reason,
+        evidenceRef: input.evidenceRef,
+      };
+      await tx.query(
+        "UPDATE runtime_football_outbox SET status='dead',error='RETIRED_TRIAL_UNKNOWN_QUARANTINED',fence=fence+1,lease_until=NULL WHERE id=$1",
+        [input.outboxId],
+      );
+      const receiptId = await receipt(
+        tx,
+        "rehearsal.native_trial_quarantined",
+        details,
+        o.agent_id,
+        o.job_id,
+      );
+      return { receiptId, ...details };
+    });
+  }
   async restore(actor: Actor, input: { epoch: string; reason: string }) {
     authorize(actor);
     check(input.reason.length >= 10, "REHEARSAL_REASON_REQUIRED");
@@ -1441,7 +1629,7 @@ export class RehearsalRuntime {
         "REHEARSAL_NATIVE_INTENTS_NOT_TERMINAL",
       );
       check(
-        !(await unresolvedNative(tx, r)).length,
+        !(await unresolvedNative(tx, r, true)).length,
         "REHEARSAL_NATIVE_OUTCOME_UNKNOWN",
       );
       if (r.status === "stopped")

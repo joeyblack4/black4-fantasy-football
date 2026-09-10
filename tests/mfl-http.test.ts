@@ -121,6 +121,63 @@ it("MFL HTTP authority comes from the token, rejects actor injection and never e
       playerIds: [],
     });
     expect(legacy.status).toBeGreaterThanOrEqual(400);
+    // This synthetic row tests the HTTP boundary independently of worker admission.
+    await f.db.query(
+      "INSERT INTO runtime_rehearsals(league_id,epoch,status,request_hash,original_host,trial_host,cap_micros,synthetic,operator_evidence_ref,reason,configured_by,start_receipt_seq) VALUES($1,'chat-http','stopped','synthetic','{}','{}',100,true,'synthetic','synthetic HTTP fence','admin',0)",
+      [leagueId],
+    );
+    await f.db.query(
+      "INSERT INTO runtime_conversation_sessions(id,league_id,epoch,host_snapshot,status,configuration,request_hash,idempotency_key,expires_at,actor_id,receipt_id) VALUES('12345678-1234-4234-9234-123456789abc',$1,'chat-http','{}','active','{}','synthetic','chat',clock_timestamp()+interval '1 hour','admin','22345678-1234-4234-9234-123456789abc')",
+      [leagueId],
+    );
+    for (const token of [owner.token, commissioner.token]) {
+      for (const path of [
+        "/v1/football/commands",
+        "/v1/commands",
+        "/v1/franchise/actions",
+        "/v1/governance/commands",
+        "/v1/publication/approve",
+        "/v1/agents/t0/appointments",
+      ]) {
+        expect(await request(path, token, {})).toMatchObject({
+          status: 409,
+          data: { error: "CONVERSATION_NATIVE_WORK_HELD" },
+        });
+      }
+    }
+    expect(calls).toHaveLength(1);
+    expect(
+      (await request("/v1/football/read", owner.token, { type: "pendingBids" }))
+        .status,
+    ).toBe(200);
+    expect(calls).toHaveLength(2);
+    await f.db.query(
+      "UPDATE runtime_conversation_sessions SET expires_at=clock_timestamp()-interval '1 second'",
+    );
+    expect(
+      await request("/v1/football/commands", owner.token, {}),
+    ).toMatchObject({
+      status: 409,
+      data: { error: "CONVERSATION_NATIVE_WORK_HELD" },
+    });
+    expect(calls).toHaveLength(2);
+    const lock = await f.db.connect();
+    try {
+      // Every rejected HTTP request released its session-transition lock.
+      expect(
+        (
+          await lock.query(
+            "SELECT pg_try_advisory_lock(hashtextextended($1,7060)) AS acquired",
+            [leagueId],
+          )
+        ).rows[0].acquired,
+      ).toBe(true);
+      await lock.query("SELECT pg_advisory_unlock(hashtextextended($1,7060))", [
+        leagueId,
+      ]);
+    } finally {
+      lock.release();
+    }
   } finally {
     server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));

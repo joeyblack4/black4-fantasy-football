@@ -4,11 +4,22 @@ import { setTimeout as pause } from "node:timers/promises";
 import { createDb } from "../src/db.js";
 import { authenticate } from "../src/auth.js";
 import { RuntimeStore } from "../src/runtime/index.js";
+import { NativeDraftNotifications } from "../src/runtime/native-draft-notifications.js";
+import { nativeDraftBuzzSender } from "../src/runtime/native-draft-buzz.js";
 import { MflDraftObserver } from "../src/runtime/mfl-draft-observer.js";
 const mode = process.argv[2];
-if (!["--configure", "--poll", "--status"].includes(mode ?? ""))
+if (
+  ![
+    "--configure",
+    "--poll",
+    "--status",
+    "--pause",
+    "--resume",
+    "--deliver",
+  ].includes(mode ?? "")
+)
   throw Error(
-    "Use --configure, --poll [--once] or --status. This process never picks or calls a model.",
+    "Use --configure, --poll [--once], --status, --pause/--resume <reason>, or --deliver. This process never picks or calls a model.",
   );
 const leagueId = process.env.FOOTBALL_LEAGUE_ID;
 if (!leagueId) throw Error("FOOTBALL_LEAGUE_ID required");
@@ -20,7 +31,7 @@ if (
   process.env.FOOTBALL_MFL_DRAFT_OBSERVER_ENABLED !== "true"
 )
   throw Error(
-    "FOOTBALL_MFL_DRAFT_OBSERVER_ENABLED=true required to create draft-turn wake jobs",
+    "FOOTBALL_MFL_DRAFT_OBSERVER_ENABLED=true required to observe draft turns",
   );
 const db = createDb();
 let stopped = false,
@@ -43,7 +54,59 @@ try {
   if (actor.role !== "commissioner" || actor.leagueId !== leagueId)
     throw Error("Scoped commissioner required");
   const observer = new MflDraftObserver(db, new RuntimeStore(db));
-  if (mode === "--configure") {
+  let delivery: NativeDraftNotifications | undefined;
+  if (
+    process.env.FOOTBALL_NATIVE_DRAFT_BUZZ_ENABLED === "true" &&
+    ["--poll", "--deliver"].includes(mode!)
+  ) {
+    const path = process.env.FOOTBALL_DRAFT_BUZZ_IDENTITY_FILE;
+    if (!path || !isAbsolute(path))
+      throw Error("Absolute FOOTBALL_DRAFT_BUZZ_IDENTITY_FILE required");
+    const identity = JSON.parse(await readFile(path, "utf8"));
+    if (
+      identity.communityUrl !==
+        "wss://black4fantasysports.communities.buzz.xyz" ||
+      !identity.privateKey
+    )
+      throw Error("Draft Buzz identity binding required");
+    delivery = new NativeDraftNotifications(
+      db,
+      nativeDraftBuzzSender({
+        executable:
+          process.env.FOOTBALL_BUZZ_CLI ?? "/Users/joey/.local/bin/buzz",
+        environment: {
+          ...process.env,
+          BUZZ_RELAY_URL: identity.communityUrl,
+          BUZZ_PRIVATE_KEY: identity.privateKey,
+          ...(identity.authTag
+            ? {
+                BUZZ_AUTH_TAG:
+                  typeof identity.authTag === "string"
+                    ? identity.authTag
+                    : JSON.stringify(identity.authTag),
+              }
+            : {}),
+        },
+      }),
+    );
+  }
+  if (mode === "--pause" || mode === "--resume") {
+    console.log(
+      JSON.stringify(
+        await observer.setPaused(
+          actor,
+          mode === "--pause",
+          process.argv.slice(3).join(" "),
+        ),
+      ),
+    );
+  } else if (mode === "--deliver") {
+    if (!delivery)
+      throw Error(
+        "FOOTBALL_NATIVE_DRAFT_BUZZ_ENABLED=true required to deliver",
+      );
+    console.log(JSON.stringify(await delivery.deliverOne(actor)));
+  } else if (mode === "--configure") {
     const path = process.env.FOOTBALL_MFL_DRAFT_OBSERVER_CONFIG_FILE;
     if (!path || !isAbsolute(path))
       throw Error("Absolute FOOTBALL_MFL_DRAFT_OBSERVER_CONFIG_FILE required");
@@ -87,6 +150,19 @@ try {
             JSON.stringify({ at: new Date().toISOString(), ...result }),
           );
         last = text;
+        if (delivery && !stopped) {
+          for (let n = 0; n < 24 && !stopped; n++) {
+            const sent = await delivery.deliverOne(current);
+            if (sent.status !== "idle")
+              console.log(
+                JSON.stringify({
+                  at: new Date().toISOString(),
+                  notification: sent,
+                }),
+              );
+            if (!["sent", "superseded"].includes(sent.status)) break;
+          }
+        }
       } catch {
         if (last !== "READ_FAILED")
           console.error(

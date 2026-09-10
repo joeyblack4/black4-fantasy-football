@@ -5,6 +5,7 @@ import type { Principal } from "../auth.js";
 import { getFootballHost } from "../league/host.js";
 import { loadMflAdapter } from "../mfl/service.js";
 import { MflError } from "../mfl/contracts.js";
+import { enqueueNativeDraftNotice } from "./native-draft-notifications.js";
 import { tagRehearsalWake } from "./rehearsal.js";
 import { RuntimeError, type RuntimeStore } from "./index.js";
 const stable = (v: unknown): string =>
@@ -26,6 +27,8 @@ export const DraftObserverConfigSchema = z
     epoch: id,
     expectedHostVersion: z.number().int().positive(),
     synthetic: z.boolean().default(false),
+    deliveryMode: z.enum(["runtime", "native-buzz"]).default("runtime"),
+    rehearsal: z.boolean().default(false),
   })
   .strict();
 const DraftStateSchema = z
@@ -122,7 +125,9 @@ export class MflDraftObserver {
         ).rows[0];
       if (old?.epoch === config.epoch) {
         check(
-          old.host_version === host.version &&
+          old.delivery_mode === config.deliveryMode &&
+            old.rehearsal === config.rehearsal &&
+            old.host_version === host.version &&
             hash(old.host_identity) === hash(host.identity) &&
             old.adapter_scope === adapter.scope &&
             old.binding_hash === bindingHash,
@@ -136,8 +141,8 @@ export class MflDraftObserver {
       );
       const row = (
         await tx.query(
-          `INSERT INTO runtime_mfl_draft_observers(league_id,epoch,host_version,host_identity,adapter_scope,binding_hash,synthetic,configured_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
-    ON CONFLICT(league_id) DO UPDATE SET epoch=EXCLUDED.epoch,host_version=EXCLUDED.host_version,host_identity=EXCLUDED.host_identity,adapter_scope=EXCLUDED.adapter_scope,binding_hash=EXCLUDED.binding_hash,synthetic=EXCLUDED.synthetic,configured_by=EXCLUDED.configured_by,status='active',fence=runtime_mfl_draft_observers.fence+1,lease_until=NULL,last_state=NULL,last_hash=NULL,resume_number=0,last_source_timestamp=NULL,last_observed_at=NULL,hold_reason=NULL,configured_at=clock_timestamp() RETURNING *`,
+          `INSERT INTO runtime_mfl_draft_observers(league_id,epoch,host_version,host_identity,adapter_scope,binding_hash,synthetic,configured_by,delivery_mode,rehearsal) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    ON CONFLICT(league_id) DO UPDATE SET epoch=EXCLUDED.epoch,host_version=EXCLUDED.host_version,host_identity=EXCLUDED.host_identity,adapter_scope=EXCLUDED.adapter_scope,binding_hash=EXCLUDED.binding_hash,synthetic=EXCLUDED.synthetic,configured_by=EXCLUDED.configured_by,delivery_mode=EXCLUDED.delivery_mode,rehearsal=EXCLUDED.rehearsal,status='active',fence=runtime_mfl_draft_observers.fence+1,lease_until=NULL,last_state=NULL,last_hash=NULL,resume_number=0,last_source_timestamp=NULL,last_observed_at=NULL,hold_reason=NULL,configured_at=clock_timestamp() RETURNING *`,
           [
             actor.leagueId,
             config.epoch,
@@ -147,6 +152,8 @@ export class MflDraftObserver {
             bindingHash,
             config.synthetic,
             actor.id,
+            config.deliveryMode,
+            config.rehearsal,
           ],
         )
       ).rows[0];
@@ -163,6 +170,42 @@ export class MflDraftObserver {
         ],
       );
       return row;
+    });
+  }
+  async setPaused(actor: Principal, paused: boolean, reason: string) {
+    authorize(actor);
+    check(
+      reason.trim().length > 0 && reason.length <= 500,
+      "DRAFT_PAUSE_REASON_REQUIRED",
+    );
+    return transaction(this.db, async (tx) => {
+      await lock(tx, actor.leagueId);
+      const row = (
+        await tx.query(
+          "SELECT * FROM runtime_mfl_draft_observers WHERE league_id=$1 FOR UPDATE",
+          [actor.leagueId],
+        )
+      ).rows[0];
+      check(
+        row?.delivery_mode === "native-buzz",
+        "NATIVE_DRAFT_OBSERVER_REQUIRED",
+      );
+      if (paused)
+        return this.hold(tx, actor.leagueId, "MANUAL_PAUSE:" + reason);
+      check(
+        row.status === "held" && row.hold_reason?.startsWith("MANUAL_PAUSE:"),
+        "DRAFT_RESUME_REQUIRES_MANUAL_HOLD",
+      );
+      // Require a fresh poll after resume before delivery or new native submissions.
+      await tx.query(
+        "UPDATE runtime_mfl_draft_observers SET status='active',hold_reason=NULL,resume_number=resume_number+1,last_observed_at=NULL,last_hash=NULL,lease_until=NULL,fence=fence+1 WHERE league_id=$1",
+        [actor.leagueId],
+      );
+      await tx.query(
+        "INSERT INTO runtime_receipts(type,details) VALUES('mfl.draft_observer_resumed',$1)",
+        [{ leagueId: actor.leagueId, actorId: actor.id, reason }],
+      );
+      return { status: "active" };
     });
   }
   private async hold(tx: Tx, leagueId: string, reason: string) {
@@ -298,6 +341,20 @@ export class MflDraftObserver {
           stateHash = hash(content),
           changed = row.last_hash !== stateHash;
         let jobId: string | undefined;
+        const notificationIds: string[] = [];
+        const nativeRecipient = async (teamId: string, ownerId: string) => {
+          const participant = (
+            await tx.query(
+              "SELECT pubkey FROM buzz_participants WHERE league_id=$1 AND team_id=$2 AND owner_id=$3",
+              [actor.leagueId, teamId, ownerId],
+            )
+          ).rows[0];
+          check(
+            participant && /^[a-f0-9]{64}$/.test(participant.pubkey),
+            "NATIVE_DRAFT_BUZZ_IDENTITY_MISSING",
+          );
+          return participant.pubkey as string;
+        };
         if (active) {
           const mapped = adapter.config.franchises.find(
               (f) => f.franchiseId === state.franchiseId,
@@ -332,46 +389,108 @@ export class MflDraftObserver {
               state.franchiseId,
               resume,
             ]);
-          const existing = (
-            await tx.query(
-              "SELECT id FROM runtime_jobs WHERE agent_id=$1 AND causal_id=$2",
-              [owner.agent_id, causalId],
-            )
-          ).rows[0];
-          if (!existing) {
-            const job = await this.runtime.ingestEventTx(tx, {
-              agentId: owner.agent_id,
-              causalId,
-              priority: "urgent",
-              payload: {
-                kind: "mfl.draft.turn",
-                host: "mfl",
-                hostVersion: row.host_version,
-                observerEpoch: row.epoch,
-                synthetic: row.synthetic,
-                observationReceiptId: observation.id,
-                observedAt: observation.at,
+          if (row.delivery_mode === "native-buzz") {
+            const notificationId = await enqueueNativeDraftNotice(
+              tx,
+              actor.leagueId,
+              {
+                kind: "on-clock",
+                epoch: row.epoch,
+                round: state.round!,
+                pick: state.pick!,
+                franchiseId: state.franchiseId!,
                 teamId: owner.team_id,
-                draft: state,
-                instruction:
-                  "MFL reports your draft turn. Read fresh mfl_read draft/players and your own saved local queue. Decide and issue an exact permitted football mfl draft action if still your turn. This observation is not a pick authorization or a completed pick; native preflight is authoritative.",
+                recipientPubkey: await nativeRecipient(
+                  owner.team_id,
+                  owner.owner_id,
+                ),
+                synthetic: row.synthetic,
+                rehearsal: row.rehearsal,
+                resume,
               },
-            });
-            if (owner.kind === "ai")
-              await tagRehearsalWake(tx, {
-                jobId: job.id,
-                leagueId: actor.leagueId,
-                hostVersion: row.host_version,
-                source: "draft-observer",
+            );
+            if (notificationId) notificationIds.push(notificationId);
+          } else {
+            const existing = (
+              await tx.query(
+                "SELECT id FROM runtime_jobs WHERE agent_id=$1 AND causal_id=$2",
+                [owner.agent_id, causalId],
+              )
+            ).rows[0];
+            if (!existing) {
+              const job = await this.runtime.ingestEventTx(tx, {
+                agentId: owner.agent_id,
+                causalId,
+                priority: "urgent",
+                payload: {
+                  kind: "mfl.draft.turn",
+                  host: "mfl",
+                  hostVersion: row.host_version,
+                  observerEpoch: row.epoch,
+                  synthetic: row.synthetic,
+                  observationReceiptId: observation.id,
+                  observedAt: observation.at,
+                  teamId: owner.team_id,
+                  draft: state,
+                  instruction:
+                    "MFL reports your draft turn. Read fresh mfl_read draft/players and your own saved local queue. Decide and issue an exact permitted football mfl draft action if still your turn. This observation is not a pick authorization or a completed pick; native preflight is authoritative.",
+                },
               });
-            jobId = job.id;
+              if (owner.kind === "ai")
+                await tagRehearsalWake(tx, {
+                  jobId: job.id,
+                  leagueId: actor.leagueId,
+                  hostVersion: row.host_version,
+                  source: "draft-observer",
+                });
+              jobId = job.id;
+            }
+          }
+        }
+        if (row.delivery_mode === "native-buzz") {
+          for (const pick of state.picks.filter(
+            (p) =>
+              p.playerId &&
+              previous &&
+              !previous.picks.some(
+                (old) =>
+                  old.round === p.round &&
+                  old.pick === p.pick &&
+                  old.playerId === p.playerId,
+              ),
+          )) {
+            const mapped = adapter.config.franchises.find(
+              (f) => f.franchiseId === pick.franchiseId,
+            );
+            check(mapped, "MFL_DRAFT_FRANCHISE_UNMAPPED");
+            const notificationId = await enqueueNativeDraftNotice(
+              tx,
+              actor.leagueId,
+              {
+                kind: "pick-confirmed",
+                epoch: row.epoch,
+                round: pick.round,
+                pick: pick.pick,
+                franchiseId: pick.franchiseId,
+                teamId: mapped.teamId,
+                recipientPubkey: await nativeRecipient(
+                  mapped.teamId,
+                  mapped.ownerId,
+                ),
+                playerId: pick.playerId!,
+                synthetic: row.synthetic,
+                rehearsal: row.rehearsal,
+                resume: 0,
+              },
+            );
+            if (notificationId) notificationIds.push(notificationId);
           }
         }
         await tx.query(
           "UPDATE runtime_mfl_draft_observers SET last_state=$2,last_hash=$3,last_source_timestamp=COALESCE($4,last_source_timestamp),resume_number=$5,last_observed_at=clock_timestamp(),lease_until=NULL WHERE league_id=$1",
           [actor.leagueId, state, stateHash, state.sourceTimestamp, resume],
         );
-        if (changed || jobId)
+        if (changed || jobId || notificationIds.length)
           await tx.query(
             "INSERT INTO runtime_receipts(type,details) VALUES('mfl.draft_observed',$1)",
             [
@@ -382,6 +501,7 @@ export class MflDraftObserver {
                 observationReceiptId: observation.id,
                 changed,
                 jobId: jobId ?? null,
+                notificationIds,
                 paused: state.paused,
                 stopped: state.stopped,
                 over: state.over,
@@ -391,12 +511,15 @@ export class MflDraftObserver {
             ],
           );
         return {
-          status: jobId
-            ? ("woken" as const)
-            : changed
-              ? ("observed" as const)
-              : ("unchanged" as const),
+          status: notificationIds.length
+            ? ("queued" as const)
+            : jobId
+              ? ("woken" as const)
+              : changed
+                ? ("observed" as const)
+                : ("unchanged" as const),
           ...(jobId ? { jobId } : {}),
+          ...(notificationIds.length ? { notificationIds } : {}),
           paused: state.paused,
           stopped: state.stopped,
           over: state.over,

@@ -25,6 +25,7 @@ export function envelope(raw: string): {
   accepted: boolean;
   data: any;
   errorCode?: string;
+  errorMessage?: string;
 } {
   const text = raw.trim();
   if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new MflError("MFL_XML_UNSAFE");
@@ -40,7 +41,12 @@ export function envelope(raw: string): {
     if (data.error) {
       const e =
         typeof data.error === "string" ? data.error : (data.error.$t ?? "");
-      return { accepted: false, data: null, errorCode: classifyError(e) };
+      return {
+        accepted: false,
+        data: null,
+        errorCode: classifyError(e),
+        errorMessage: safeErrorMessage(e),
+      };
     }
     return { accepted: data.success === "OK" || data.status === "OK", data };
   }
@@ -52,9 +58,85 @@ export function envelope(raw: string): {
   const value = decode(match[2]!);
   return match[1] === "status" && value.trim() === "OK"
     ? { accepted: true, data: { status: "OK" } }
-    : { accepted: false, data: null, errorCode: classifyError(value) };
+    : {
+        accepted: false,
+        data: null,
+        errorCode: classifyError(value),
+        errorMessage: safeErrorMessage(value),
+      };
+}
+/** Bounded provider explanation, never HTML or credentials. Not agent instructions. */
+export function safeErrorMessage(value: string): string {
+  return decode(value)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/https?:\/\/\S+/gi, "[link removed]")
+    .replace(
+      /\b(?:MFL_USER_ID|APIKEY|token|password|authorization|cookie)\b\s*[:=]\s*[^\s,;]+/gi,
+      "[credential removed]",
+    )
+    .replace(/\bBearer\s+\S+/gi, "[credential removed]")
+    .replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi, "[email removed]")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1000);
+}
+/** Native live_draft uses success === "OK", otherwise response (official draft_response).
+ * Deliberately separate from export/import envelopes; no arbitrary response text is retained. */
+export function liveDraftEnvelope(raw: string): {
+  accepted: boolean;
+  data: null;
+  errorCode?: string;
+  nativeStatus: "OK" | "NON_OK";
+  reasonCode: string | null;
+} {
+  if (raw.length > 16384) throw new MflError("MFL_DRAFT_RESPONSE_INVALID");
+  let data: any;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new MflError("MFL_DRAFT_RESPONSE_INVALID");
+  }
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data) ||
+    !Object.hasOwn(data, "success") ||
+    data.error !== undefined ||
+    (data.status !== undefined && data.status !== data.success)
+  )
+    throw new MflError("MFL_DRAFT_RESPONSE_AMBIGUOUS");
+  if (data.success === "OK")
+    return { accepted: true, data: null, nativeStatus: "OK", reasonCode: null };
+  const scalar =
+    (typeof data.success === "string" &&
+      data.success.length > 0 &&
+      data.success.length <= 128) ||
+    typeof data.success === "boolean" ||
+    (typeof data.success === "number" && Number.isFinite(data.success));
+  if (
+    !scalar ||
+    typeof data.response !== "string" ||
+    !data.response.trim() ||
+    data.response.length > 4096
+  )
+    throw new MflError("MFL_DRAFT_RESPONSE_AMBIGUOUS");
+  const errorCode = classifyError(data.response);
+  return {
+    accepted: false,
+    data: null,
+    errorCode,
+    nativeStatus: "NON_OK",
+    reasonCode: errorCode,
+  };
 }
 function classifyError(message: string): string {
+  message = safeErrorMessage(message);
+  if (
+    /too many requests|rate limit|throttl|request limit exceeded/i.test(message)
+  )
+    return "MFL_THROTTLED";
   if (/^(?:Error\s*-\s*)?No League Scoring Rules\s*$/i.test(message.trim()))
     return "MFL_SCORING_RULES_NOT_CONFIGURED";
   if (/logged in|MFL_USER_ID|APIKEY|login|authentication/i.test(message))
@@ -62,6 +144,16 @@ function classifyError(message: string): string {
   if (/not available|unavailable|season starts/i.test(message))
     return "MFL_DATA_UNAVAILABLE";
   if (/locked/i.test(message)) return "MFL_PLAYER_LOCKED";
+  if (/invalid.*round|round.*(?:invalid|out of range)/i.test(message))
+    return "MFL_WAIVER_ROUND_INVALID";
+  if (
+    /waivers?.*(?:not allowed|not available|closed)|(?:not allowing|not allowed|cannot perform|not permitted).*(?:waiver|free.agent)|first.come.*(?:not|closed)/i.test(
+      message,
+    )
+  )
+    return "MFL_ACQUISITION_UNAVAILABLE";
+  if (/roster.*(?:limit|maximum|full|too many)|too many players/i.test(message))
+    return "MFL_ROSTER_LIMIT";
   if (/bid.*exceeds|balance|budget/i.test(message))
     return "MFL_BID_BUDGET_REJECTED";
   if (/permission/i.test(message)) return "MFL_PERMISSION_REJECTED";

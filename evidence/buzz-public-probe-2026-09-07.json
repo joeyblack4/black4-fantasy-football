@@ -1,0 +1,110 @@
+[
+  {
+    "method": "GET",
+    "path": "/health",
+    "retrievedAt": "2026-09-07T21:06:32.107869+00:00",
+    "status": 403,
+    "contentType": "text/plain; charset=UTF-8",
+    "allow": null,
+    "server": "cloudflare",
+    "finalUrl": "https://black4.communities.buzz.xyz/health",
+    "bodyPrefix": "error code: 1010\n"
+  },
+  {
+    "method": "GET",
+    "path": "/info",
+    "retrievedAt": "2026-09-07T21:06:32.108162+00:00",
+    "status": 403,
+    "contentType": "text/plain; charset=UTF-8",
+    "allow": null,
+    "server": "cloudflare",
+    "finalUrl": "https://black4.communities.buzz.xyz/info",
+    "bodyPrefix": "error code: 1010\n"
+  },
+  {
+    "method": "GET",
+    "path": "/",
+    "retrievedAt": "2026-09-07T21:06:32.108247+00:00",
+    "status": 403,
+    "contentType": "application/problem+json; charset=utf-8",
+    "allow": null,
+    "server": "cloudflare",
+    "finalUrl": "https://black4.communities.buzz.xyz/",
+    "keys": [
+      "cloudflare_error",
+      "detail",
+      "error_category",
+      "error_code",
+      "error_name",
+      "footer",
+      "instance",
+      "owner_action_required",
+      "ray_id",
+      "retryable",
+      "status",
+      "timestamp",
+      "title",
+      "type",
+      "what_you_should_do",
+      "zone"
+    ],
+    "selectedBody": {
+      "status": 403
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/_liveness",
+    "retrievedAt": "2026-09-07T21:06:32.108295+00:00",
+    "status": 403,
+    "contentType": "text/plain; charset=UTF-8",
+    "allow": null,
+    "server": "cloudflare",
+    "finalUrl": "https://black4.communities.buzz.xyz/_liveness",
+    "bodyPrefix": "error code: 1010\n"
+  },
+  {
+    "method": "GET",
+    "path": "/_readiness",
+    "retrievedAt": "2026-09-07T21:06:32.238542+00:00",
+    "status": 403,
+    "contentType": "text/plain; charset=UTF-8",
+    "allow": null,
+    "server": "cloudflare",
+    "finalUrl": "https://black4.communities.buzz.xyz/_readiness",
+    "bodyPrefix": "error code: 1010\n"
+  },
+  {
+    "method": "GET",
+    "path": "/_status",
+    "retrievedAt": "2026-09-07T21:06:32.244604+00:00",
+    "status": 403,
+    "contentType": "text/plain; charset=UTF-8",
+    "allow": null,
+    "server": "cloudflare",
+    "finalUrl": "https://black4.communities.buzz.xyz/_status",
+    "bodyPrefix": "error code: 1010\n"
+  },
+  {
+    "method": "GET",
+    "path": "/operator/communities",
+    "retrievedAt": "2026-09-07T21:06:32.245492+00:00",
+    "status": 403,
+    "contentType": "text/plain; charset=UTF-8",
+    "allow": null,
+    "server": "cloudflare",
+    "finalUrl": "https://black4.communities.buzz.xyz/operator/communities",
+    "bodyPrefix": "error code: 1010\n"
+  },
+  {
+    "method": "OPTIONS",
+    "path": "/operator/communities",
+    "retrievedAt": "2026-09-07T21:06:32.250979+00:00",
+    "status": 403,
+    "contentType": "text/plain; charset=UTF-8",
+    "allow": null,
+    "server": "cloudflare",
+    "finalUrl": "https://black4.communities.buzz.xyz/operator/communities",
+    "bodyPrefix": "error code: 1010\n"
+  }
+]

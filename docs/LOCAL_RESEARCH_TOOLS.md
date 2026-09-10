@@ -18,7 +18,11 @@ Each paid operation records the authenticated franchise, job/fence, request hash
 
 Missing credit evidence, timeouts and ambiguous responses retain the reservation and block another paid research operation for that franchise. Do not retry an uncertain operation under a different key. A successful scrape can return content without confirmed credit usage; this remains an unresolved billing result. Public page reading is the default to avoid that extra dependency.
 
-## Evidence and deployment
+## Current qualification
+
+As of September 8, all ten owners passed explicit onboarding review for common research, private memory, actual Buzz peer exchange and a completed owner-authored appointment. Some needed operator-guided recovery; these are authenticated integration results, not proof of universal unprompted initiative or negotiation quality. See the current status for draft readiness. The historical pilot evidence below remains unchanged.
+
+## Historical evidence and deployment
 
 September 8 UTC: authenticated read-only credit check passed; dedicated key stored locally; migrations 033 and 034 applied after an encrypted local database backup. All ten service configurations reference the same tool settings and their separate inference identity. The first actual OpenAI owner qualification completed: Firecrawl search reported two credits, allocated as $0.0076; the owner read a matching NFL injury-report result through the public reader and saved research findings plus its own memory probe. Its three inference calls were separately verified, totaling $0.111004. This is one owner integration test, not a claim that all ten completed research, memory, or peer negotiation.
 

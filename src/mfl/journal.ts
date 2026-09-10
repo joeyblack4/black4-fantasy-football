@@ -26,16 +26,30 @@ export class PgMflJournal implements MflJournal {
         cached: async (key, age) => {
           const row = (
             await client.query(
-              "SELECT details->'data' AS data FROM runtime_receipts WHERE type='mfl_read' AND details->>'scope'=$1 AND details->>'cacheKey'=$2 AND created_at <= clock_timestamp() AND created_at > clock_timestamp()-$3::int*interval '1 second' ORDER BY seq DESC LIMIT 1",
+              "SELECT details->'data' AS data FROM runtime_receipts WHERE type='mfl_read' AND (details->>'scope'=$1 OR $2 LIKE 'mfl-provider:%') AND details->>'cacheKey'=$2 AND created_at <= clock_timestamp() AND created_at > clock_timestamp()-$3::int*interval '1 second' ORDER BY seq DESC LIMIT 1",
               [scope, key, age],
             )
           ).rows[0];
           return row?.data ?? null;
         },
-        beforeRequest: async (interval) => {
+        withProviderLock: async (key, work) => {
           await client.query(
-            "SELECT pg_sleep(GREATEST(0,$2::numeric/1000 - EXTRACT(EPOCH FROM clock_timestamp() - COALESCE((SELECT max(created_at) FROM runtime_receipts WHERE type='mfl_read' AND details->>'scope'=$1),clock_timestamp()-interval '1 hour'))))",
-            [scope, interval],
+            "SELECT pg_advisory_lock(hashtextextended($1,7067))",
+            [key],
+          );
+          try {
+            return await work();
+          } finally {
+            await client.query(
+              "SELECT pg_advisory_unlock(hashtextextended($1,7067))",
+              [key],
+            );
+          }
+        },
+        beforeRequest: async (interval, providerKey) => {
+          await client.query(
+            "SELECT pg_sleep(GREATEST(0,$2::numeric/1000 - EXTRACT(EPOCH FROM clock_timestamp() - COALESCE((SELECT max(created_at) FROM runtime_receipts WHERE type='mfl_read' AND (CASE WHEN $3::text IS NULL THEN details->>'scope'=$1 ELSE details->>'providerKey'=$3 END)),clock_timestamp()-interval '1 hour'))))",
+            [scope, interval, providerKey ?? null],
           );
         },
         find: async (key) => {

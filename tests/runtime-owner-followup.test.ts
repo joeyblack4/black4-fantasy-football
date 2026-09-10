@@ -411,6 +411,58 @@ it("refuses legacy attestation when a later job overwrote the note, even though 
   );
 });
 
+it.each([
+  { memoryMicroseconds: "400", receiptMicroseconds: "500", valid: true },
+  { memoryMicroseconds: "050", receiptMicroseconds: "500", valid: false },
+  { memoryMicroseconds: "400", receiptMicroseconds: "950", valid: false },
+])(
+  "checks legacy transaction timing at PostgreSQL precision: $memoryMicroseconds/$receiptMicroseconds",
+  async ({ memoryMicroseconds, receiptMicroseconds, valid }) => {
+    const original = await appointment([
+      {
+        type: "remember",
+        key: "owner/onboarding-followup",
+        content: "SYNTHETIC submillisecond legacy transaction proof.",
+      },
+    ]);
+    await transaction(f.db, async (tx) => {
+      // All proof rows retain one shared xmin. Times fall within a single JS
+      // millisecond, so a Date round trip must not determine admissibility.
+      await tx.query(
+        "UPDATE runtime_jobs SET claimed_at='2026-01-01T00:00:00.000100Z',completed_at='2026-01-01T00:00:00.000900Z' WHERE id=$1",
+        [original.id],
+      );
+      await tx.query(
+        "UPDATE runtime_memory SET updated_at=$1 WHERE agent_id='agent0' AND key='owner/onboarding-followup'",
+        [`2026-01-01T00:00:00.000${memoryMicroseconds}Z`],
+      );
+      await tx.query(
+        "UPDATE runtime_receipts SET created_at=$1 WHERE agent_id='agent0' AND type='memory.updated' AND details->>'key'='owner/onboarding-followup'",
+        [`2026-01-01T00:00:00.000${receiptMicroseconds}Z`],
+      );
+      await tx.query(
+        "UPDATE runtime_receipts SET created_at='2026-01-01T00:00:00.000950Z' WHERE job_id=$1 AND type='job.completed'",
+        [original.id],
+      );
+      await tx.query(
+        "DELETE FROM runtime_receipts WHERE type='owner_stage.followup_memory_written'",
+      );
+    });
+    const attestation = stage.attestLegacyFollowup(
+      commissioner,
+      request(original.id),
+    );
+    if (valid)
+      await expect(attestation).resolves.toMatchObject({
+        source: "operator-attested-legacy-same-commit",
+      });
+    else
+      await expect(attestation).rejects.toThrow(
+        "LEGACY_TRANSACTION_PROOF_REQUIRED",
+      );
+  },
+);
+
 it("an explicit semantic-failure retest preserves the completed action but removes its qualification until a new appointment succeeds", async () => {
   const original = await appointment([
     {

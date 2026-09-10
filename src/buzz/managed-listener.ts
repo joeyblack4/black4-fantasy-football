@@ -6,7 +6,12 @@ import { BuzzArchiveService } from "./archive.js";
 /** Credentials stay in the trusted process. Canonical events are the only wakeup source. */
 export async function pollManagedBuzzOnce(
   db: Db,
-  input: { leagueId: string; agentId: string; executable: string },
+  input: {
+    leagueId: string;
+    agentId: string;
+    executable: string;
+    channelIds?: string[];
+  },
 ) {
   const binding = (
     await db.query(
@@ -47,5 +52,7 @@ export async function pollManagedBuzzOnce(
       ...(credential.authTag ? { BUZZ_AUTH_TAG: credential.authTag } : {}),
     },
   });
-  return pollBuzzOnce(new BuzzArchiveService(db), listener, read);
+  return pollBuzzOnce(new BuzzArchiveService(db), listener, read, {
+    channelIds: input.channelIds,
+  });
 }

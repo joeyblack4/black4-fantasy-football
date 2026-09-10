@@ -1,0 +1,17 @@
+{
+  "synthetic": true,
+  "verifiedAt": "2026-09-07T21:25:36.216926+00:00",
+  "scope": "Local PostgreSQL custom-format backup and restore, including ratified scoring and a browser-saved human lineup; no remote disaster-recovery claim.",
+  "dumpSha256": "99c2256882f5a0be2f2349674b7b8f00704a18e9d613b97cd398c28791b30540",
+  "restoreExitCode": 0,
+  "readback": {
+    "leagues": 1,
+    "teams": 12,
+    "picks": 36,
+    "lineups": 12,
+    "votes": 8,
+    "migrations": 11,
+    "approvedScoringFormulas": 1,
+    "restoredHumanLineup": "SYNTHETIC-P-014"
+  }
+}

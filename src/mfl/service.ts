@@ -1,8 +1,9 @@
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import type { Db } from "../db.js";
-import { hostBinding } from "../league/host.js";
+import { transaction, type Db, type Tx } from "../db.js";
+import { hostBinding, getFootballHost } from "../league/host.js";
+import { hash } from "./codec.js";
 import { MflAdapter } from "./index.js";
 import { MflConfigSchema, MflError } from "./contracts.js";
 import { PgMflJournal } from "./journal.js";
@@ -14,6 +15,55 @@ export const MflDeploymentSchema = z
     writesEnabled: z.boolean().default(false),
   })
   .strict();
+
+/** Serialize native pause with draft submission; the journal keeps its separate append-only connection. */
+export async function withNativeDraftAdmission<T>(
+  db: Db,
+  leagueId: string,
+  expectedHostVersion: number,
+  expectedScope: string,
+  work: (admit: () => Promise<void>) => Promise<T>,
+  leagueLock?: Tx,
+): Promise<T> {
+  const run = async (tx: Tx) => {
+    // Always acquire league7044 before journal7066, matching observer polling.
+    if (!leagueLock)
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,7044))",
+        [leagueId],
+      );
+    return work(async () => {
+      const row = (
+        await tx.query(
+          "SELECT * FROM runtime_mfl_draft_observers WHERE league_id=$1",
+          [leagueId],
+        )
+      ).rows[0];
+      // Existing runtime delivery keeps its existing admission behavior.
+      if (!row || row.delivery_mode !== "native-buzz") return;
+      if (row.status !== "active")
+        throw new MflError("MFL_NATIVE_DRAFT_PAUSED");
+      const host = await getFootballHost(tx, leagueId);
+      if (
+        host.kind !== "mfl" ||
+        host.version !== expectedHostVersion ||
+        row.host_version !== host.version ||
+        hash(row.host_identity) !== hash(host.identity) ||
+        row.adapter_scope !== expectedScope
+      )
+        throw new MflError("MFL_NATIVE_DRAFT_HOST_CHANGED");
+      if (
+        !row.last_observed_at ||
+        !row.last_state ||
+        row.last_state.paused ||
+        row.last_state.stopped ||
+        row.last_state.over
+      )
+        throw new MflError("MFL_NATIVE_DRAFT_NOT_READY");
+    });
+  };
+  return leagueLock ? run(leagueLock) : transaction(db, run);
+}
 
 /** Operator-supplied files only. Neither path nor credential is accepted from owner input. */
 async function privateJson(path: string | undefined) {
@@ -32,6 +82,7 @@ async function privateJson(path: string | undefined) {
 export async function loadMflAdapter(
   db: Db,
   leagueId: string,
+  context?: { leagueLock: Tx },
 ): Promise<MflAdapter> {
   const selected = await hostBinding(db, leagueId);
   if (selected.host !== "mfl") throw new MflError("MFL_HOST_NOT_SELECTED");
@@ -60,7 +111,16 @@ export async function loadMflAdapter(
     )
   )
     throw new MflError("MFL_FRANCHISE_BINDING_CHANGED");
-  return new MflAdapter(config, {
+  const adapter = new MflAdapter(config, {
+    withDraftAdmission: (work) =>
+      withNativeDraftAdmission(
+        db,
+        leagueId,
+        selected.version,
+        adapter.scope,
+        work,
+        context?.leagueLock,
+      ),
     journal: new PgMflJournal(db),
     writesEnabled: deployment.writesEnabled,
     getSessionCookie: async () => {
@@ -83,4 +143,5 @@ export async function loadMflAdapter(
       return session.cookieValue;
     },
   });
+  return adapter;
 }

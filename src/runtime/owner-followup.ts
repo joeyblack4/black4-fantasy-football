@@ -458,9 +458,11 @@ export class OwnerFollowupRecovery {
       const memory = (
         await tx.query(
           `SELECT m.content,m.version,m.updated_at,m.xmin::text AS memory_xmin,
-          (SELECT r.seq FROM runtime_receipts r WHERE r.agent_id=m.agent_id AND r.type='memory.updated' AND r.details->>'key'=m.key AND r.xmin=m.xmin AND r.created_at BETWEEN $2 AND $3 ORDER BY r.seq DESC LIMIT 1) AS memory_receipt_seq
-         FROM runtime_memory m WHERE m.agent_id=$1 AND m.key='owner/onboarding-followup'`,
-          [request.agentId, row.claimed_at, row.completed_at],
+          m.updated_at BETWEEN j.claimed_at AND j.completed_at AS memory_within_claim,
+          (SELECT r.seq FROM runtime_receipts r WHERE r.agent_id=m.agent_id AND r.type='memory.updated' AND r.details->>'key'=m.key AND r.xmin=m.xmin AND r.created_at BETWEEN j.claimed_at AND j.completed_at ORDER BY r.seq DESC LIMIT 1) AS memory_receipt_seq
+         FROM runtime_memory m JOIN runtime_jobs j ON j.agent_id=m.agent_id AND j.id=$2
+         WHERE m.agent_id=$1 AND m.key='owner/onboarding-followup'`,
+          [request.agentId, request.appointmentId],
         )
       ).rows[0];
       check(
@@ -469,8 +471,9 @@ export class OwnerFollowupRecovery {
           memory.memory_xmin === row.job_xmin &&
           memory.memory_xmin === row.completion_xmin &&
           memory.memory_receipt_seq &&
-          memory.updated_at >= row.claimed_at &&
-          memory.updated_at <= row.completed_at,
+          // Compare source timestamps in PostgreSQL: JS Date truncates their
+          // microseconds and can both exclude valid receipts and widen bounds.
+          memory.memory_within_claim,
         "OWNER_STAGE_LEGACY_TRANSACTION_PROOF_REQUIRED",
       );
       const details = {

@@ -439,8 +439,24 @@ async function mflFixture() {
             .filter(Boolean);
           return new Response(JSON.stringify({ status: "OK" }));
         }
+        if (params.get("TYPE") === "players") {
+          expect(url.hostname).toBe("api.myfantasyleague.com");
+          expect(new Headers(init?.headers).has("Cookie")).toBe(false);
+          return Response.json({
+            players: {
+              player: [
+                {
+                  id: "12345",
+                  name: "Synthetic roster player",
+                  position: "QB",
+                  team: "BUF",
+                },
+              ],
+            },
+          });
+        }
         if (params.get("TYPE") === "rosters") {
-          const franchise = params.get("FRANCHISE")!;
+          const franchise = params.get("FRANCHISE") ?? "0001";
           state.seenFranchises.push(franchise);
           return new Response(
             JSON.stringify({

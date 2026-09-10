@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B2350"/>
+      <stop offset="0.55" stop-color="#12173A"/>
+      <stop offset="1" stop-color="#0A0E24"/>
+    </linearGradient>
+    <radialGradient id="moon" cx="0.38" cy="0.34" r="0.9">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.55" stop-color="#DDE3F2"/>
+      <stop offset="1" stop-color="#9AA6C8"/>
+    </radialGradient>
+    <linearGradient id="ball" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#D97A34"/>
+      <stop offset="1" stop-color="#9E4E1B"/>
+    </linearGradient>
+    <clipPath id="badgeClip">
+      <rect x="32" y="32" width="960" height="960" rx="200" ry="200"/>
+    </clipPath>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="200" ry="200" fill="url(#bg)"/>
+
+  <g clip-path="url(#badgeClip)">
+    <!-- stars -->
+    <g fill="#E8ECFA">
+      <circle cx="180" cy="200" r="6"/>
+      <circle cx="300" cy="130" r="4"/>
+      <circle cx="830" cy="170" r="5"/>
+      <circle cx="890" cy="300" r="4"/>
+      <circle cx="140" cy="430" r="4"/>
+      <circle cx="905" cy="520" r="6"/>
+      <circle cx="250" cy="820" r="5"/>
+      <circle cx="800" cy="860" r="4"/>
+      <circle cx="620" cy="120" r="4"/>
+      <circle cx="110" cy="640" r="5"/>
+    </g>
+    <g stroke="#E8ECFA" stroke-width="5" stroke-linecap="round">
+      <path d="M740 220 v28 M726 234 h28"/>
+      <path d="M220 560 v22 M209 571 h22"/>
+      <path d="M860 700 v24 M848 712 h24"/>
+    </g>
+
+    <!-- orbit ring -->
+    <ellipse cx="512" cy="520" rx="430" ry="300" fill="none" stroke="#2DD4BF" stroke-width="14" opacity="0.9"
+             transform="rotate(-18 512 520)"/>
+    <ellipse cx="512" cy="520" rx="430" ry="300" fill="none" stroke="#0A0E24" stroke-width="4" opacity="0.35"
+             transform="rotate(-18 512 520)"/>
+
+    <!-- crescent moon -->
+    <circle cx="470" cy="540" r="300" fill="url(#moon)"/>
+    <circle cx="620" cy="430" r="272" fill="#12173A"/>
+    <!-- crater shading on the lit limb -->
+    <circle cx="330" cy="640" r="34" fill="#B9C2DC"/>
+    <circle cx="382" cy="742" r="24" fill="#B9C2DC"/>
+    <circle cx="268" cy="520" r="22" fill="#C7CFE4"/>
+
+    <!-- football on trajectory -->
+    <g transform="translate(742 356) rotate(38)">
+      <ellipse cx="0" cy="0" rx="150" ry="88" fill="url(#ball)" stroke="#3A1D08" stroke-width="8"/>
+      <path d="M-150 0 A150 88 0 0 1 150 0" fill="none" stroke="#F7E9D2" stroke-width="0"/>
+      <line x1="-96" y1="-52" x2="-96" y2="52" stroke="#F7E9D2" stroke-width="10"/>
+      <line x1="96" y1="-52" x2="96" y2="52" stroke="#F7E9D2" stroke-width="10"/>
+      <line x1="-52" y1="0" x2="52" y2="0" stroke="#F7E9D2" stroke-width="12"/>
+      <g stroke="#F7E9D2" stroke-width="9" stroke-linecap="round">
+        <line x1="-34" y1="-16" x2="-34" y2="16"/>
+        <line x1="-11" y1="-16" x2="-11" y2="16"/>
+        <line x1="12" y1="-16" x2="12" y2="16"/>
+        <line x1="35" y1="-16" x2="35" y2="16"/>
+      </g>
+    </g>
+
+    <!-- motion trail -->
+    <path d="M610 250 Q 700 300 760 340" fill="none" stroke="#2DD4BF" stroke-width="18" stroke-linecap="round" opacity="0.85"/>
+    <path d="M560 300 Q 660 345 724 380" fill="none" stroke="#2DD4BF" stroke-width="10" stroke-linecap="round" opacity="0.5"/>
+  </g>
+
+  <!-- badge border -->
+  <rect x="32" y="32" width="960" height="960" rx="200" ry="200" fill="none" stroke="#2DD4BF" stroke-width="18"/>
+</svg>

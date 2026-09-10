@@ -1,3 +1,4 @@
+import { assertConversationJob } from "./conversation.js";
 import { z } from "zod";
 import { transaction, type Db, type Tx } from "../db.js";
 import { getFootballHost } from "../league/host.js";
@@ -43,6 +44,7 @@ const walletRows = (rows: any[], heldStatuses: string[]) => ({
   })),
 });
 async function scoped(tx: Tx, job: Job, config: OwnerStatusConfig) {
+  const conversationAuthority = await assertConversationJob(tx, job);
   const row = (
     await tx.query(
       `SELECT b.league_id,b.team_id,t.owner_id,a.budget_micros,a.spent_micros,a.reserved_micros,m.id manifest_id,m.version manifest_version,m.document,m.activated_at
@@ -50,7 +52,7 @@ async function scoped(tx: Tx, job: Job, config: OwnerStatusConfig) {
  JOIN league_teams t ON t.league_id=b.league_id AND t.id=b.team_id
  JOIN provider_manifests m ON m.agent_id=a.id AND m.league_id=b.league_id AND m.status='active'
  WHERE j.id=$1 AND j.agent_id=$2 AND j.fence=$3 AND j.worker_id=$4 AND j.status='running' AND j.lease_until>clock_timestamp()
- AND j.execution_mode='owner' AND a.enabled AND a.kind='ai' AND t.kind='ai' AND a.model=$5 AND m.id=$6
+ AND ((j.execution_mode='owner' AND a.enabled) OR (j.execution_mode='conversation' AND $7::boolean)) AND a.kind='ai' AND t.kind='ai' AND a.model=$5 AND m.id=$6
  AND m.document->>'model'=a.model AND m.document->>'agentId'=a.id AND m.document->>'leagueId'=b.league_id
  FOR SHARE OF j,a,b,t,m`,
       [
@@ -60,6 +62,7 @@ async function scoped(tx: Tx, job: Job, config: OwnerStatusConfig) {
         job.workerId,
         job.model,
         config.manifestId,
+        Boolean(conversationAuthority),
       ],
     )
   ).rows[0];

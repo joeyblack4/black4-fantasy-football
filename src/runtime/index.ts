@@ -1,4 +1,16 @@
 import {
+  harnessClaimPredicate,
+  HarnessSelectionSchema,
+  type HarnessSelection,
+} from "./harness-assignment.js";
+import {
+  conversationClaimPredicate,
+  ordinaryConversationFence,
+  assertConversationJob,
+  assertConversationBudget,
+  assertConversationActions,
+} from "./conversation.js";
+import {
   rehearsalClaimPredicate,
   assertRehearsalClaim,
   assertRehearsalBudget,
@@ -84,13 +96,18 @@ export type MessageInput = {
 export type DriverResult = {
   actions: Action[];
   costMicros: number;
+  /** Trusted adapter billing receipt; never accepted as a native model decision field. */
+  costEvidenceId?: string;
   summary: string;
 };
+export type DriverRunContext = { signal: AbortSignal };
 export interface AgentDriver {
   readonly name: string;
   readonly synthetic: boolean;
   readonly model: string;
-  run(job: Job): Promise<DriverResult>;
+  readonly harnessId?: string;
+  readonly configDigest?: string;
+  run(job: Job, context?: DriverRunContext): Promise<DriverResult>;
 }
 export class RuntimeError extends Error {
   constructor(
@@ -581,11 +598,15 @@ export class RuntimeStore {
     model?: string,
     allowedAgentIds?: string[],
     onlyCanaryJobId?: string,
+    conversationSessionId?: string,
+    harness?: HarnessSelection,
   ): Promise<Job | null> {
+    if (harness !== undefined) HarnessSelectionSchema.parse(harness);
     if (allowedAgentIds !== undefined) {
       assert(allowedAgentIds.length <= 100, "INVALID_WORKER_SCOPE");
       allowedAgentIds.forEach(key);
     }
+    assert(!(onlyCanaryJobId && conversationSessionId), "WORKER_MODE_CONFLICT");
     key(workerId);
     assert(
       Number.isInteger(leaseMs) && leaseMs >= 10 && leaseMs <= 600000,
@@ -595,11 +616,33 @@ export class RuntimeStore {
       // Lock the franchise first: two workers cannot run different turns of the same owner concurrently.
       const candidate = (
         await tx.query(
-          `SELECT a.id FROM runtime_agents a JOIN LATERAL (SELECT priority_rank,due_at FROM runtime_jobs p WHERE p.agent_id=a.id AND ${rehearsalClaimPredicate("p")} AND (($3::uuid IS NULL AND p.execution_mode='owner') OR (p.id=$3 AND p.execution_mode='provider_canary')) AND p.status IN ('pending','running') AND p.due_at<=clock_timestamp() AND (p.status='pending' OR p.lease_until<=clock_timestamp()) ORDER BY priority_rank DESC,due_at,id LIMIT 1) ready ON true WHERE (a.enabled OR ($3::uuid IS NOT NULL AND EXISTS(SELECT 1 FROM runtime_jobs c JOIN provider_manifests m ON m.id::text=c.payload->>'manifestId' JOIN runtime_bindings b ON b.agent_id=c.agent_id AND b.league_id=m.league_id WHERE c.id=$3 AND c.agent_id=a.id AND c.execution_mode='provider_canary' AND m.agent_id=a.id AND m.status='staged'))) AND a.kind='ai' AND ($1::text IS NULL OR a.model=$1) AND ($2::text[] IS NULL OR a.id=ANY($2::text[])) AND EXISTS (SELECT 1 FROM runtime_jobs j WHERE j.agent_id=a.id AND j.status IN ('pending','running') AND j.due_at<=clock_timestamp() AND (j.status='pending' OR j.lease_until<=clock_timestamp())) AND NOT EXISTS (SELECT 1 FROM runtime_jobs r WHERE r.agent_id=a.id AND r.status='running' AND r.lease_until>clock_timestamp()) ORDER BY ready.priority_rank DESC,ready.due_at,a.id FOR NO KEY UPDATE OF a SKIP LOCKED LIMIT 1`,
-          [model ?? null, allowedAgentIds ?? null, onlyCanaryJobId ?? null],
+          `SELECT a.id FROM runtime_agents a JOIN LATERAL (SELECT priority_rank,due_at FROM runtime_jobs p WHERE p.agent_id=a.id AND (($4::uuid IS NOT NULL AND p.execution_mode='conversation' AND ${conversationClaimPredicate("p", "$4")}) OR ($4::uuid IS NULL AND ${ordinaryConversationFence("p")} AND ${rehearsalClaimPredicate("p")} AND (($3::uuid IS NULL AND p.execution_mode='owner') OR (p.id=$3 AND p.execution_mode='provider_canary')))) AND p.status IN ('pending','running') AND p.due_at<=clock_timestamp() AND (p.status='pending' OR p.lease_until<=clock_timestamp()) ORDER BY priority_rank DESC,due_at,id LIMIT 1) ready ON true WHERE (a.enabled OR ($4::uuid IS NOT NULL AND EXISTS(SELECT 1 FROM runtime_jobs c WHERE c.agent_id=a.id AND c.execution_mode='conversation' AND ${conversationClaimPredicate("c", "$4")})) OR ($3::uuid IS NOT NULL AND EXISTS(SELECT 1 FROM runtime_jobs c JOIN provider_manifests m ON m.id::text=c.payload->>'manifestId' JOIN runtime_bindings b ON b.agent_id=c.agent_id AND b.league_id=m.league_id WHERE c.id=$3 AND c.agent_id=a.id AND c.execution_mode='provider_canary' AND m.agent_id=a.id AND m.status='staged'))) AND a.kind='ai' AND ${harnessClaimPredicate("a", "$5", "$6")} AND ($1::text IS NULL OR a.model=$1) AND ($2::text[] IS NULL OR a.id=ANY($2::text[])) AND EXISTS (SELECT 1 FROM runtime_jobs j WHERE j.agent_id=a.id AND j.status IN ('pending','running') AND j.due_at<=clock_timestamp() AND (j.status='pending' OR j.lease_until<=clock_timestamp())) AND NOT EXISTS (SELECT 1 FROM runtime_jobs r WHERE r.agent_id=a.id AND r.status='running' AND r.lease_until>clock_timestamp()) ORDER BY ready.priority_rank DESC,ready.due_at,a.id FOR NO KEY UPDATE OF a SKIP LOCKED LIMIT 1`,
+          [
+            model ?? null,
+            allowedAgentIds ?? null,
+            onlyCanaryJobId ?? null,
+            conversationSessionId ?? null,
+            harness?.harnessId ?? null,
+            harness?.configDigest ?? null,
+          ],
         )
       ).rows[0];
       if (!candidate) return null;
+      // A staging transaction may commit while this query waits for the agent
+      // lock. Recheck the selector with a fresh statement before touching jobs.
+      if (
+        !(
+          await tx.query(
+            `SELECT 1 FROM runtime_agents a WHERE a.id=$1 AND ${harnessClaimPredicate("a", "$2", "$3")}`,
+            [
+              candidate.id,
+              harness?.harnessId ?? null,
+              harness?.configDigest ?? null,
+            ],
+          )
+        ).rowCount
+      )
+        return null;
       // The selection statement may have observed a pre-commit snapshot while acquiring the owner lock.
       // Recheck under our lock before selecting work to prevent a second live turn.
       if (
@@ -613,8 +656,12 @@ export class RuntimeStore {
         return null;
       const job = (
         await tx.query(
-          `SELECT j.* FROM runtime_jobs j WHERE agent_id=$1 AND ${rehearsalClaimPredicate("j")} AND (($2::uuid IS NULL AND execution_mode='owner') OR (id=$2 AND execution_mode='provider_canary')) AND status IN ('pending','running') AND due_at<=clock_timestamp() AND (status='pending' OR lease_until<=clock_timestamp()) ORDER BY priority_rank DESC,due_at,id FOR UPDATE LIMIT 1`,
-          [candidate.id, onlyCanaryJobId ?? null],
+          `SELECT j.* FROM runtime_jobs j WHERE agent_id=$1 AND (($3::uuid IS NOT NULL AND j.execution_mode='conversation' AND ${conversationClaimPredicate("j", "$3")}) OR ($3::uuid IS NULL AND ${ordinaryConversationFence("j")} AND ${rehearsalClaimPredicate("j")} AND (($2::uuid IS NULL AND execution_mode='owner') OR (id=$2 AND execution_mode='provider_canary')))) AND status IN ('pending','running') AND due_at<=clock_timestamp() AND (status='pending' OR lease_until<=clock_timestamp()) ORDER BY priority_rank DESC,due_at,id FOR UPDATE LIMIT 1`,
+          [
+            candidate.id,
+            onlyCanaryJobId ?? null,
+            conversationSessionId ?? null,
+          ],
         )
       ).rows[0];
       if (!job) return null;
@@ -746,15 +793,17 @@ export class RuntimeStore {
         (r.parent_job_id ?? undefined) === (claim.parentJobId ?? undefined),
       "CLAIM_CONTEXT_CHANGED",
     );
+    const conversationAuthority = await assertConversationJob(tx, claim);
     if (!a.enabled)
       assert(
-        r.execution_mode === "provider_canary" &&
-          (
-            await tx.query(
-              "SELECT 1 FROM provider_manifests m JOIN runtime_bindings b ON b.agent_id=m.agent_id AND b.league_id=m.league_id WHERE m.id::text=$1 AND m.agent_id=$2 AND m.status='staged'",
-              [r.payload?.manifestId ?? null, claim.agentId],
-            )
-          ).rowCount,
+        Boolean(conversationAuthority) ||
+          (r.execution_mode === "provider_canary" &&
+            (
+              await tx.query(
+                "SELECT 1 FROM provider_manifests m JOIN runtime_bindings b ON b.agent_id=m.agent_id AND b.league_id=m.league_id WHERE m.id::text=$1 AND m.agent_id=$2 AND m.status='staged'",
+                [r.payload?.manifestId ?? null, claim.agentId],
+              )
+            ).rowCount),
         "AGENT_UNAVAILABLE",
       );
     assert(a.kind === "ai", "HUMAN_CANNOT_BE_INVOKED");
@@ -801,6 +850,7 @@ export class RuntimeStore {
       );
       const id = randomUUID();
       await assertRehearsalBudget(tx, claim, amountMicros);
+      await assertConversationBudget(tx, claim, amountMicros);
       await reserveOwnerStageTurn(tx, claim, amountMicros);
       await reserveConventionTurn(tx, claim, amountMicros);
       await tx.query(
@@ -831,7 +881,19 @@ export class RuntimeStore {
     assert(result.summary.length <= 8000, "SUMMARY_LIMIT");
     return transaction(this.db, async (tx) => {
       await this.validClaim(tx, claim);
-      await assertRehearsalCommit(tx, claim, result.actions, result.synthetic);
+      const conversation = await assertConversationActions(
+        tx,
+        claim,
+        result.actions,
+        result.synthetic,
+      );
+      if (!conversation)
+        await assertRehearsalCommit(
+          tx,
+          claim,
+          result.actions,
+          result.synthetic,
+        );
       const executionMode = (
         await tx.query("SELECT execution_mode FROM runtime_jobs WHERE id=$1", [
           claim.id,

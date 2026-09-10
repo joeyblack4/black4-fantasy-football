@@ -1,0 +1,1262 @@
+{
+  "verifiedAt": "2026-09-09T03:47:43.711233+00:00",
+  "mflLeagueId": "62282",
+  "season": 2026,
+  "epoch": "native-production-20260908-v1",
+  "confirmedPicks": 192,
+  "uniquePlayers": 192,
+  "draftOver": true,
+  "teams": [
+    {
+      "franchiseId": "0001",
+      "name": "Human Resources",
+      "count": 16,
+      "matchesDraft": true
+    },
+    {
+      "franchiseId": "0002",
+      "name": "Mavis & Co.",
+      "count": 16,
+      "matchesDraft": true
+    },
+    {
+      "franchiseId": "0003",
+      "name": "Signal Callers",
+      "count": 16,
+      "matchesDraft": true
+    },
+    {
+      "franchiseId": "0004",
+      "name": "Marginal Gains",
+      "count": 16,
+      "matchesDraft": true
+    },
+    {
+      "franchiseId": "0005",
+      "name": "Mountain View Matrix",
+      "count": 16,
+      "matchesDraft": true
+    },
+    {
+      "franchiseId": "0006",
+      "name": "Colossus - grok-4.6",
+      "count": 16,
+      "matchesDraft": true
+    },
+    {
+      "franchiseId": "0007",
+      "name": "Meta Mesh",
+      "count": 16,
+      "matchesDraft": true
+    },
+    {
+      "franchiseId": "0008",
+      "name": "DeepSeek Abyssal",
+      "count": 16,
+      "matchesDraft": true
+    },
+    {
+      "franchiseId": "0009",
+      "name": "Meridian Grid",
+      "count": 16,
+      "matchesDraft": true
+    },
+    {
+      "franchiseId": "0010",
+      "name": "Mistral Voltage",
+      "count": 16,
+      "matchesDraft": true
+    },
+    {
+      "franchiseId": "0011",
+      "name": "Moonshot Marauders",
+      "count": 16,
+      "matchesDraft": true
+    },
+    {
+      "franchiseId": "0012",
+      "name": "Z Marks the Spot",
+      "count": 16,
+      "matchesDraft": true
+    }
+  ],
+  "sourceReceipts": {
+    "draft": "d4c523f7-8cd0-485e-9d99-11085a691ee5",
+    "rosters": "66ec5b3e-3811-40d0-b0f2-0c38bd6f1218",
+    "players": [
+      "238eee5e-4560-4580-94ff-8f47d7ed633d",
+      "c32c1982-aa21-4ea1-b6e0-df47ce2465f4",
+      "008c1b2b-ebff-4132-a4f9-3a5636dabc0a",
+      "0cc18c49-89ff-4a50-8eb1-2a69beb4e565",
+      "0b746d94-f957-47cf-a1d4-5e063c03e464",
+      "733a82ec-3e4a-4fc5-af9a-7d82f4ba4fee",
+      "cab043d3-06d1-47e1-8098-eb8166dcfe51",
+      "9859d67d-d71e-4b14-a1a0-f9e2b743a383",
+      "30a87766-4c46-4e84-8947-52d938685dc4",
+      "afe55d6c-121c-4e7b-b78b-be2654e4beea",
+      "12229113-fb0a-45ef-b4db-7bd5ec0ec496",
+      "e9b5c3d4-03d6-4da1-9910-b7a955066dd0",
+      "966f138e-17ac-44e1-b58c-7c46e99614a5",
+      "a70ad91e-d06c-4e72-824f-0a0b5fcd9d9b"
+    ]
+  },
+  "sourceTimes": {
+    "draft": "2026-09-09T03:45:58.532Z",
+    "rosters": "2026-09-09T03:45:57.105Z",
+    "players": "2026-09-09T03:48:45.647Z"
+  },
+  "board": [
+    {
+      "round": 1,
+      "pick": 1,
+      "franchiseId": "0004",
+      "playerId": "16162"
+    },
+    {
+      "round": 1,
+      "pick": 2,
+      "franchiseId": "0008",
+      "playerId": "16161"
+    },
+    {
+      "round": 1,
+      "pick": 3,
+      "franchiseId": "0005",
+      "playerId": "14832"
+    },
+    {
+      "round": 1,
+      "pick": 4,
+      "franchiseId": "0002",
+      "playerId": "13604"
+    },
+    {
+      "round": 1,
+      "pick": 5,
+      "franchiseId": "0001",
+      "playerId": "15281"
+    },
+    {
+      "round": 1,
+      "pick": 6,
+      "franchiseId": "0011",
+      "playerId": "14802"
+    },
+    {
+      "round": 1,
+      "pick": 7,
+      "franchiseId": "0007",
+      "playerId": "14836"
+    },
+    {
+      "round": 1,
+      "pick": 8,
+      "franchiseId": "0010",
+      "playerId": "13130"
+    },
+    {
+      "round": 1,
+      "pick": 9,
+      "franchiseId": "0003",
+      "playerId": "16211"
+    },
+    {
+      "round": 1,
+      "pick": 10,
+      "franchiseId": "0009",
+      "playerId": "13589"
+    },
+    {
+      "round": 1,
+      "pick": 11,
+      "franchiseId": "0006",
+      "playerId": "15287"
+    },
+    {
+      "round": 1,
+      "pick": 12,
+      "franchiseId": "0012",
+      "playerId": "16615"
+    },
+    {
+      "round": 2,
+      "pick": 1,
+      "franchiseId": "0012",
+      "playerId": "16618"
+    },
+    {
+      "round": 2,
+      "pick": 2,
+      "franchiseId": "0006",
+      "playerId": "15715"
+    },
+    {
+      "round": 2,
+      "pick": 3,
+      "franchiseId": "0009",
+      "playerId": "16185"
+    },
+    {
+      "round": 2,
+      "pick": 4,
+      "franchiseId": "0003",
+      "playerId": "16181"
+    },
+    {
+      "round": 2,
+      "pick": 5,
+      "franchiseId": "0010",
+      "playerId": "13116"
+    },
+    {
+      "round": 2,
+      "pick": 6,
+      "franchiseId": "0007",
+      "playerId": "12626"
+    },
+    {
+      "round": 2,
+      "pick": 7,
+      "franchiseId": "0011",
+      "playerId": "16167"
+    },
+    {
+      "round": 2,
+      "pick": 8,
+      "franchiseId": "0001",
+      "playerId": "17042"
+    },
+    {
+      "round": 2,
+      "pick": 9,
+      "franchiseId": "0002",
+      "playerId": "15290"
+    },
+    {
+      "round": 2,
+      "pick": 10,
+      "franchiseId": "0005",
+      "playerId": "15708"
+    },
+    {
+      "round": 2,
+      "pick": 11,
+      "franchiseId": "0008",
+      "playerId": "15753"
+    },
+    {
+      "round": 2,
+      "pick": 12,
+      "franchiseId": "0004",
+      "playerId": "17044"
+    },
+    {
+      "round": 3,
+      "pick": 1,
+      "franchiseId": "0004",
+      "playerId": "14104"
+    },
+    {
+      "round": 3,
+      "pick": 2,
+      "franchiseId": "0008",
+      "playerId": "15751"
+    },
+    {
+      "round": 3,
+      "pick": 3,
+      "franchiseId": "0005",
+      "playerId": "16614"
+    },
+    {
+      "round": 3,
+      "pick": 4,
+      "franchiseId": "0002",
+      "playerId": "13132"
+    },
+    {
+      "round": 3,
+      "pick": 5,
+      "franchiseId": "0001",
+      "playerId": "15711"
+    },
+    {
+      "round": 3,
+      "pick": 6,
+      "franchiseId": "0011",
+      "playerId": "15282"
+    },
+    {
+      "round": 3,
+      "pick": 7,
+      "franchiseId": "0007",
+      "playerId": "16641"
+    },
+    {
+      "round": 3,
+      "pick": 8,
+      "franchiseId": "0010",
+      "playerId": "11244"
+    },
+    {
+      "round": 3,
+      "pick": 9,
+      "franchiseId": "0003",
+      "playerId": "15794"
+    },
+    {
+      "round": 3,
+      "pick": 10,
+      "franchiseId": "0009",
+      "playerId": "15710"
+    },
+    {
+      "round": 3,
+      "pick": 11,
+      "franchiseId": "0006",
+      "playerId": "15754"
+    },
+    {
+      "round": 3,
+      "pick": 12,
+      "franchiseId": "0012",
+      "playerId": "13593"
+    },
+    {
+      "round": 4,
+      "pick": 1,
+      "franchiseId": "0012",
+      "playerId": "14073"
+    },
+    {
+      "round": 4,
+      "pick": 2,
+      "franchiseId": "0006",
+      "playerId": "17472"
+    },
+    {
+      "round": 4,
+      "pick": 3,
+      "franchiseId": "0009",
+      "playerId": "15762"
+    },
+    {
+      "round": 4,
+      "pick": 4,
+      "franchiseId": "0003",
+      "playerId": "17071"
+    },
+    {
+      "round": 4,
+      "pick": 5,
+      "franchiseId": "0010",
+      "playerId": "11675"
+    },
+    {
+      "round": 4,
+      "pick": 6,
+      "franchiseId": "0007",
+      "playerId": "14782"
+    },
+    {
+      "round": 4,
+      "pick": 7,
+      "franchiseId": "0011",
+      "playerId": "16194"
+    },
+    {
+      "round": 4,
+      "pick": 8,
+      "franchiseId": "0001",
+      "playerId": "17081"
+    },
+    {
+      "round": 4,
+      "pick": 9,
+      "franchiseId": "0002",
+      "playerId": "14835"
+    },
+    {
+      "round": 4,
+      "pick": 10,
+      "franchiseId": "0005",
+      "playerId": "11671"
+    },
+    {
+      "round": 4,
+      "pick": 11,
+      "franchiseId": "0008",
+      "playerId": "16214"
+    },
+    {
+      "round": 4,
+      "pick": 12,
+      "franchiseId": "0004",
+      "playerId": "15256"
+    },
+    {
+      "round": 5,
+      "pick": 1,
+      "franchiseId": "0004",
+      "playerId": "16190"
+    },
+    {
+      "round": 5,
+      "pick": 2,
+      "franchiseId": "0008",
+      "playerId": "13146"
+    },
+    {
+      "round": 5,
+      "pick": 3,
+      "franchiseId": "0005",
+      "playerId": "16213"
+    },
+    {
+      "round": 5,
+      "pick": 4,
+      "franchiseId": "0002",
+      "playerId": "12620"
+    },
+    {
+      "round": 5,
+      "pick": 5,
+      "franchiseId": "0001",
+      "playerId": "16580"
+    },
+    {
+      "round": 5,
+      "pick": 6,
+      "franchiseId": "0011",
+      "playerId": "14783"
+    },
+    {
+      "round": 5,
+      "pick": 7,
+      "franchiseId": "0007",
+      "playerId": "17051"
+    },
+    {
+      "round": 5,
+      "pick": 8,
+      "franchiseId": "0010",
+      "playerId": "12186"
+    },
+    {
+      "round": 5,
+      "pick": 9,
+      "franchiseId": "0003",
+      "playerId": "15253"
+    },
+    {
+      "round": 5,
+      "pick": 10,
+      "franchiseId": "0009",
+      "playerId": "17104"
+    },
+    {
+      "round": 5,
+      "pick": 11,
+      "franchiseId": "0006",
+      "playerId": "15284"
+    },
+    {
+      "round": 5,
+      "pick": 12,
+      "franchiseId": "0012",
+      "playerId": "16598"
+    },
+    {
+      "round": 6,
+      "pick": 1,
+      "franchiseId": "0012",
+      "playerId": "13299"
+    },
+    {
+      "round": 6,
+      "pick": 2,
+      "franchiseId": "0006",
+      "playerId": "14777"
+    },
+    {
+      "round": 6,
+      "pick": 3,
+      "franchiseId": "0009",
+      "playerId": "17045"
+    },
+    {
+      "round": 6,
+      "pick": 4,
+      "franchiseId": "0003",
+      "playerId": "15756"
+    },
+    {
+      "round": 6,
+      "pick": 5,
+      "franchiseId": "0010",
+      "playerId": "15755"
+    },
+    {
+      "round": 6,
+      "pick": 6,
+      "franchiseId": "0007",
+      "playerId": "14800"
+    },
+    {
+      "round": 6,
+      "pick": 7,
+      "franchiseId": "0011",
+      "playerId": "16627"
+    },
+    {
+      "round": 6,
+      "pick": 8,
+      "franchiseId": "0001",
+      "playerId": "14797"
+    },
+    {
+      "round": 6,
+      "pick": 9,
+      "franchiseId": "0002",
+      "playerId": "14102"
+    },
+    {
+      "round": 6,
+      "pick": 10,
+      "franchiseId": "0005",
+      "playerId": "15749"
+    },
+    {
+      "round": 6,
+      "pick": 11,
+      "franchiseId": "0008",
+      "playerId": "16581"
+    },
+    {
+      "round": 6,
+      "pick": 12,
+      "franchiseId": "0004",
+      "playerId": "17473"
+    },
+    {
+      "round": 7,
+      "pick": 1,
+      "franchiseId": "0004",
+      "playerId": "17102"
+    },
+    {
+      "round": 7,
+      "pick": 2,
+      "franchiseId": "0008",
+      "playerId": "14109"
+    },
+    {
+      "round": 7,
+      "pick": 3,
+      "franchiseId": "0005",
+      "playerId": "16152"
+    },
+    {
+      "round": 7,
+      "pick": 4,
+      "franchiseId": "0002",
+      "playerId": "15261"
+    },
+    {
+      "round": 7,
+      "pick": 5,
+      "franchiseId": "0001",
+      "playerId": "17497"
+    },
+    {
+      "round": 7,
+      "pick": 6,
+      "franchiseId": "0011",
+      "playerId": "15329"
+    },
+    {
+      "round": 7,
+      "pick": 7,
+      "franchiseId": "0007",
+      "playerId": "13630"
+    },
+    {
+      "round": 7,
+      "pick": 8,
+      "franchiseId": "0010",
+      "playerId": "11679"
+    },
+    {
+      "round": 7,
+      "pick": 9,
+      "franchiseId": "0003",
+      "playerId": "15698"
+    },
+    {
+      "round": 7,
+      "pick": 10,
+      "franchiseId": "0009",
+      "playerId": "13635"
+    },
+    {
+      "round": 7,
+      "pick": 11,
+      "franchiseId": "0006",
+      "playerId": "16222"
+    },
+    {
+      "round": 7,
+      "pick": 12,
+      "franchiseId": "0012",
+      "playerId": "16616"
+    },
+    {
+      "round": 8,
+      "pick": 1,
+      "franchiseId": "0012",
+      "playerId": "14071"
+    },
+    {
+      "round": 8,
+      "pick": 2,
+      "franchiseId": "0006",
+      "playerId": "15259"
+    },
+    {
+      "round": 8,
+      "pick": 3,
+      "franchiseId": "0009",
+      "playerId": "16192"
+    },
+    {
+      "round": 8,
+      "pick": 4,
+      "franchiseId": "0003",
+      "playerId": "15742"
+    },
+    {
+      "round": 8,
+      "pick": 5,
+      "franchiseId": "0010",
+      "playerId": "15262"
+    },
+    {
+      "round": 8,
+      "pick": 6,
+      "franchiseId": "0007",
+      "playerId": "16184"
+    },
+    {
+      "round": 8,
+      "pick": 7,
+      "franchiseId": "0011",
+      "playerId": "16080"
+    },
+    {
+      "round": 8,
+      "pick": 8,
+      "franchiseId": "0001",
+      "playerId": "16206"
+    },
+    {
+      "round": 8,
+      "pick": 9,
+      "franchiseId": "0002",
+      "playerId": "13671"
+    },
+    {
+      "round": 8,
+      "pick": 10,
+      "franchiseId": "0005",
+      "playerId": "16150"
+    },
+    {
+      "round": 8,
+      "pick": 11,
+      "franchiseId": "0008",
+      "playerId": "14085"
+    },
+    {
+      "round": 8,
+      "pick": 12,
+      "franchiseId": "0004",
+      "playerId": "16579"
+    },
+    {
+      "round": 9,
+      "pick": 1,
+      "franchiseId": "0004",
+      "playerId": "15789"
+    },
+    {
+      "round": 9,
+      "pick": 2,
+      "franchiseId": "0008",
+      "playerId": "13163"
+    },
+    {
+      "round": 9,
+      "pick": 3,
+      "franchiseId": "0005",
+      "playerId": "14136"
+    },
+    {
+      "round": 9,
+      "pick": 4,
+      "franchiseId": "0002",
+      "playerId": "17052"
+    },
+    {
+      "round": 9,
+      "pick": 5,
+      "franchiseId": "0001",
+      "playerId": "17066"
+    },
+    {
+      "round": 9,
+      "pick": 6,
+      "franchiseId": "0011",
+      "playerId": "15972"
+    },
+    {
+      "round": 9,
+      "pick": 7,
+      "franchiseId": "0007",
+      "playerId": "13590"
+    },
+    {
+      "round": 9,
+      "pick": 8,
+      "franchiseId": "0010",
+      "playerId": "16186"
+    },
+    {
+      "round": 9,
+      "pick": 9,
+      "franchiseId": "0003",
+      "playerId": "17043"
+    },
+    {
+      "round": 9,
+      "pick": 10,
+      "franchiseId": "0009",
+      "playerId": "17070"
+    },
+    {
+      "round": 9,
+      "pick": 11,
+      "franchiseId": "0006",
+      "playerId": "17068"
+    },
+    {
+      "round": 9,
+      "pick": 12,
+      "franchiseId": "0012",
+      "playerId": "16620"
+    },
+    {
+      "round": 10,
+      "pick": 1,
+      "franchiseId": "0012",
+      "playerId": "16169"
+    },
+    {
+      "round": 10,
+      "pick": 2,
+      "franchiseId": "0006",
+      "playerId": "17075"
+    },
+    {
+      "round": 10,
+      "pick": 3,
+      "franchiseId": "0009",
+      "playerId": "14823"
+    },
+    {
+      "round": 10,
+      "pick": 4,
+      "franchiseId": "0003",
+      "playerId": "16187"
+    },
+    {
+      "round": 10,
+      "pick": 5,
+      "franchiseId": "0010",
+      "playerId": "16197"
+    },
+    {
+      "round": 10,
+      "pick": 6,
+      "franchiseId": "0007",
+      "playerId": "13164"
+    },
+    {
+      "round": 10,
+      "pick": 7,
+      "franchiseId": "0011",
+      "playerId": "9431"
+    },
+    {
+      "round": 10,
+      "pick": 8,
+      "franchiseId": "0001",
+      "playerId": "15768"
+    },
+    {
+      "round": 10,
+      "pick": 9,
+      "franchiseId": "0002",
+      "playerId": "14842"
+    },
+    {
+      "round": 10,
+      "pick": 10,
+      "franchiseId": "0005",
+      "playerId": "11222"
+    },
+    {
+      "round": 10,
+      "pick": 11,
+      "franchiseId": "0008",
+      "playerId": "14779"
+    },
+    {
+      "round": 10,
+      "pick": 12,
+      "franchiseId": "0004",
+      "playerId": "15237"
+    },
+    {
+      "round": 11,
+      "pick": 1,
+      "franchiseId": "0004",
+      "playerId": "16597"
+    },
+    {
+      "round": 11,
+      "pick": 2,
+      "franchiseId": "0008",
+      "playerId": "13629"
+    },
+    {
+      "round": 11,
+      "pick": 3,
+      "franchiseId": "0005",
+      "playerId": "15712"
+    },
+    {
+      "round": 11,
+      "pick": 4,
+      "franchiseId": "0002",
+      "playerId": "14840"
+    },
+    {
+      "round": 11,
+      "pick": 5,
+      "franchiseId": "0001",
+      "playerId": "17103"
+    },
+    {
+      "round": 11,
+      "pick": 6,
+      "franchiseId": "0011",
+      "playerId": "16604"
+    },
+    {
+      "round": 11,
+      "pick": 7,
+      "franchiseId": "0007",
+      "playerId": "16594"
+    },
+    {
+      "round": 11,
+      "pick": 8,
+      "franchiseId": "0010",
+      "playerId": "16593"
+    },
+    {
+      "round": 11,
+      "pick": 9,
+      "franchiseId": "0003",
+      "playerId": "16287"
+    },
+    {
+      "round": 11,
+      "pick": 10,
+      "franchiseId": "0009",
+      "playerId": "16414"
+    },
+    {
+      "round": 11,
+      "pick": 11,
+      "franchiseId": "0006",
+      "playerId": "15779"
+    },
+    {
+      "round": 11,
+      "pick": 12,
+      "franchiseId": "0012",
+      "playerId": "13192"
+    },
+    {
+      "round": 12,
+      "pick": 1,
+      "franchiseId": "0012",
+      "playerId": "16582"
+    },
+    {
+      "round": 12,
+      "pick": 2,
+      "franchiseId": "0006",
+      "playerId": "14833"
+    },
+    {
+      "round": 12,
+      "pick": 3,
+      "franchiseId": "0009",
+      "playerId": "0532"
+    },
+    {
+      "round": 12,
+      "pick": 4,
+      "franchiseId": "0003",
+      "playerId": "16164"
+    },
+    {
+      "round": 12,
+      "pick": 5,
+      "franchiseId": "0010",
+      "playerId": "16583"
+    },
+    {
+      "round": 12,
+      "pick": 6,
+      "franchiseId": "0007",
+      "playerId": "15799"
+    },
+    {
+      "round": 12,
+      "pick": 7,
+      "franchiseId": "0011",
+      "playerId": "13674"
+    },
+    {
+      "round": 12,
+      "pick": 8,
+      "franchiseId": "0001",
+      "playerId": "0515"
+    },
+    {
+      "round": 12,
+      "pick": 9,
+      "franchiseId": "0002",
+      "playerId": "16189"
+    },
+    {
+      "round": 12,
+      "pick": 10,
+      "franchiseId": "0005",
+      "playerId": "16596"
+    },
+    {
+      "round": 12,
+      "pick": 11,
+      "franchiseId": "0008",
+      "playerId": "0511"
+    },
+    {
+      "round": 12,
+      "pick": 12,
+      "franchiseId": "0004",
+      "playerId": "15798"
+    },
+    {
+      "round": 13,
+      "pick": 1,
+      "franchiseId": "0004",
+      "playerId": "16188"
+    },
+    {
+      "round": 13,
+      "pick": 2,
+      "franchiseId": "0008",
+      "playerId": "15757"
+    },
+    {
+      "round": 13,
+      "pick": 3,
+      "franchiseId": "0005",
+      "playerId": "16723"
+    },
+    {
+      "round": 13,
+      "pick": 4,
+      "franchiseId": "0002",
+      "playerId": "13772"
+    },
+    {
+      "round": 13,
+      "pick": 5,
+      "franchiseId": "0001",
+      "playerId": "16684"
+    },
+    {
+      "round": 13,
+      "pick": 6,
+      "franchiseId": "0011",
+      "playerId": "12611"
+    },
+    {
+      "round": 13,
+      "pick": 7,
+      "franchiseId": "0007",
+      "playerId": "14127"
+    },
+    {
+      "round": 13,
+      "pick": 8,
+      "franchiseId": "0010",
+      "playerId": "16595"
+    },
+    {
+      "round": 13,
+      "pick": 9,
+      "franchiseId": "0003",
+      "playerId": "15255"
+    },
+    {
+      "round": 13,
+      "pick": 10,
+      "franchiseId": "0009",
+      "playerId": "15761"
+    },
+    {
+      "round": 13,
+      "pick": 11,
+      "franchiseId": "0006",
+      "playerId": "14860"
+    },
+    {
+      "round": 13,
+      "pick": 12,
+      "franchiseId": "0012",
+      "playerId": "16747"
+    },
+    {
+      "round": 14,
+      "pick": 1,
+      "franchiseId": "0012",
+      "playerId": "13633"
+    },
+    {
+      "round": 14,
+      "pick": 2,
+      "franchiseId": "0006",
+      "playerId": "16603"
+    },
+    {
+      "round": 14,
+      "pick": 3,
+      "franchiseId": "0009",
+      "playerId": "17256"
+    },
+    {
+      "round": 14,
+      "pick": 4,
+      "franchiseId": "0003",
+      "playerId": "16195"
+    },
+    {
+      "round": 14,
+      "pick": 5,
+      "franchiseId": "0010",
+      "playerId": "16384"
+    },
+    {
+      "round": 14,
+      "pick": 6,
+      "franchiseId": "0007",
+      "playerId": "15721"
+    },
+    {
+      "round": 14,
+      "pick": 7,
+      "franchiseId": "0011",
+      "playerId": "15716"
+    },
+    {
+      "round": 14,
+      "pick": 8,
+      "franchiseId": "0001",
+      "playerId": "15979"
+    },
+    {
+      "round": 14,
+      "pick": 9,
+      "franchiseId": "0002",
+      "playerId": "13354"
+    },
+    {
+      "round": 14,
+      "pick": 10,
+      "franchiseId": "0005",
+      "playerId": "16626"
+    },
+    {
+      "round": 14,
+      "pick": 11,
+      "franchiseId": "0008",
+      "playerId": "13303"
+    },
+    {
+      "round": 14,
+      "pick": 12,
+      "franchiseId": "0004",
+      "playerId": "16850"
+    },
+    {
+      "round": 15,
+      "pick": 1,
+      "franchiseId": "0004",
+      "playerId": "12860"
+    },
+    {
+      "round": 15,
+      "pick": 2,
+      "franchiseId": "0008",
+      "playerId": "14138"
+    },
+    {
+      "round": 15,
+      "pick": 3,
+      "franchiseId": "0005",
+      "playerId": "15368"
+    },
+    {
+      "round": 15,
+      "pick": 4,
+      "franchiseId": "0002",
+      "playerId": "0501"
+    },
+    {
+      "round": 15,
+      "pick": 5,
+      "franchiseId": "0001",
+      "playerId": "14056"
+    },
+    {
+      "round": 15,
+      "pick": 6,
+      "franchiseId": "0011",
+      "playerId": "17074"
+    },
+    {
+      "round": 15,
+      "pick": 7,
+      "franchiseId": "0007",
+      "playerId": "15293"
+    },
+    {
+      "round": 15,
+      "pick": 8,
+      "franchiseId": "0010",
+      "playerId": "16390"
+    },
+    {
+      "round": 15,
+      "pick": 9,
+      "franchiseId": "0003",
+      "playerId": "0509"
+    },
+    {
+      "round": 15,
+      "pick": 10,
+      "franchiseId": "0009",
+      "playerId": "16174"
+    },
+    {
+      "round": 15,
+      "pick": 11,
+      "franchiseId": "0006",
+      "playerId": "16846"
+    },
+    {
+      "round": 15,
+      "pick": 12,
+      "franchiseId": "0012",
+      "playerId": "11936"
+    },
+    {
+      "round": 16,
+      "pick": 1,
+      "franchiseId": "0012",
+      "playerId": "0531"
+    },
+    {
+      "round": 16,
+      "pick": 2,
+      "franchiseId": "0006",
+      "playerId": "0510"
+    },
+    {
+      "round": 16,
+      "pick": 3,
+      "franchiseId": "0009",
+      "playerId": "14861"
+    },
+    {
+      "round": 16,
+      "pick": 4,
+      "franchiseId": "0003",
+      "playerId": "16680"
+    },
+    {
+      "round": 16,
+      "pick": 5,
+      "franchiseId": "0010",
+      "playerId": "16395"
+    },
+    {
+      "round": 16,
+      "pick": 6,
+      "franchiseId": "0007",
+      "playerId": "0518"
+    },
+    {
+      "round": 16,
+      "pick": 7,
+      "franchiseId": "0011",
+      "playerId": "0528"
+    },
+    {
+      "round": 16,
+      "pick": 8,
+      "franchiseId": "0001",
+      "playerId": "17514"
+    },
+    {
+      "round": 16,
+      "pick": 9,
+      "franchiseId": "0002",
+      "playerId": "16193"
+    },
+    {
+      "round": 16,
+      "pick": 10,
+      "franchiseId": "0005",
+      "playerId": "0516"
+    },
+    {
+      "round": 16,
+      "pick": 11,
+      "franchiseId": "0008",
+      "playerId": "16165"
+    },
+    {
+      "round": 16,
+      "pick": 12,
+      "franchiseId": "0004",
+      "playerId": "0524"
+    }
+  ]
+}

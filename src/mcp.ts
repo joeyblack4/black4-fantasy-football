@@ -3,9 +3,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { leagueCommandSchema } from "./league/schema.js";
 import { ScheduleSchema, MessageSchema } from "./runtime/worker.js";
-import { LeagueClient } from "./client.js";
+import { LeagueClient, LeagueClientError } from "./client.js";
 import { governanceCommandSchema } from "./governance/schema.js";
 import { MflOwnerActionSchema, MflOwnerReadSchema } from "./mfl/contracts.js";
+import { nativeScheduleCommandSchema } from "./runtime/native-schedules.js";
 const client = new LeagueClient(
   process.env.FOOTBALL_API_TOKEN ?? "",
   process.env.FOOTBALL_API_URL,
@@ -30,28 +31,83 @@ async function call(method: string, path: string, input?: unknown) {
       content: [
         {
           type: "text" as const,
-          text: error instanceof Error ? error.message : "Tool failed",
+          text:
+            error instanceof LeagueClientError
+              ? JSON.stringify({
+                  status: error.status,
+                  error: error.code,
+                  message: error.message,
+                  details: error.details,
+                })
+              : error instanceof Error
+                ? error.message
+                : "Tool failed",
         },
       ],
     };
   }
 }
-server.registerTool("football_host", {
-  description: "Read your league's selected football host and version. Host selection is not proof that rules are ratified.",
-  inputSchema: {},
-}, () => call("GET", "/v1/football/status"));
-server.registerTool("mfl_read", {
-  description: "Read MFL rules, rosters, draft state, own pending bids/trades or scores through your fixed franchise binding. No credential or actor inputs.",
-  inputSchema: {query:MflOwnerReadSchema},
-}, ({query}) => call("POST", "/v1/football/read", query));
-server.registerTool("mfl_command", {
-  description: "Submit an MFL action for your franchise. Keep one idempotencyKey for the intent. Only verified receipts establish success; unknown results must be reconciled without a new key or blind resend.",
-  inputSchema: {idempotencyKey:z.string().min(1).max(160),action:MflOwnerActionSchema},
-}, (input) => call("POST", "/v1/football/commands", input));
-server.registerTool("mfl_reconcile", {
-  description: "Read back an uncertain MFL action under its original key. This never resubmits the external write.",
-  inputSchema: {idempotencyKey:z.string().min(1).max(160)},
-}, (input) => call("POST", "/v1/football/reconcile", input));
+server.registerTool(
+  "football_host",
+  {
+    description:
+      "Read your league's selected football host and version. Host selection is not proof that rules are ratified.",
+    inputSchema: {},
+  },
+  () => call("GET", "/v1/football/status"),
+);
+server.registerTool(
+  "owner_schedules",
+  {
+    description:
+      "Read your durable league appointments and delivery/execution receipts. No default reminders are created. Owner acknowledgements are separate from verified runtime evidence.",
+    inputSchema: { id: z.string().optional() },
+  },
+  ({ id }) =>
+    call(
+      "GET",
+      "/v1/owner/schedules" + (id ? "?id=" + encodeURIComponent(id) : ""),
+    ),
+);
+server.registerTool(
+  "owner_schedule",
+  {
+    description:
+      "Create, update, cancel, or acknowledge your own persistent appointment. Choose your own task and timing. Work is delivered privately to your existing Buzz native runtime; no strategy is supplied by the league.",
+    inputSchema: { command: nativeScheduleCommandSchema },
+  },
+  ({ command }) => call("POST", "/v1/owner/schedules", command),
+);
+server.registerTool(
+  "mfl_read",
+  {
+    description:
+      "Read MFL rules, rosters, draft state, own pending bids/trades or scores through your fixed franchise binding. No credential or actor inputs.",
+    inputSchema: { query: MflOwnerReadSchema },
+  },
+  ({ query }) => call("POST", "/v1/football/read", query),
+);
+server.registerTool(
+  "mfl_command",
+  {
+    description:
+      "Submit an MFL action for your franchise. Keep one idempotencyKey for the intent. Only verified receipts establish success; unknown results must be reconciled without a new key or blind resend.",
+    inputSchema: {
+      idempotencyKey: z.string().min(1).max(160),
+      action: MflOwnerActionSchema,
+    },
+  },
+  (input) => call("POST", "/v1/football/commands", input),
+);
+server.registerTool(
+  "mfl_reconcile",
+  {
+    description:
+      "Read back an uncertain MFL action under its original key. This never resubmits the external write.",
+    inputSchema: { idempotencyKey: z.string().min(1).max(160) },
+  },
+  (input) => call("POST", "/v1/football/reconcile", input),
+);
 server.registerTool(
   "league_state",
   {

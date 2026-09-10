@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Z Marks the Spot primary badge">
+  <!-- Z Marks the Spot · Z.ai franchise, Black4 Fantasy Football 2026 -->
+  <!-- Palette: Midnight Ink #0B0E14 · Treasure Gold #F0B429 · Signal Blue #4C8DFF · Chart Cream #F7F3E8 -->
+
+  <defs>
+    <path id="zmts-arc-top" d="M 46,256 A 210,210 0 0 1 466,256" fill="none"/>
+    <path id="zmts-arc-bottom" d="M 46,256 A 210,210 0 0 0 466,256" fill="none"/>
+  </defs>
+
+  <!-- Badge field and rings -->
+  <circle cx="256" cy="256" r="246" fill="#0B0E14" stroke="#F0B429" stroke-width="12"/>
+  <circle cx="256" cy="256" r="188" fill="none" stroke="#F7F3E8" stroke-width="1.5" opacity="0.22"/>
+
+  <!-- Ring lettering -->
+  <text font-family="Georgia, 'Times New Roman', serif" font-size="30" font-weight="700" letter-spacing="7" fill="#F0B429">
+    <textPath href="#zmts-arc-top" startOffset="50%" text-anchor="middle">Z MARKS THE SPOT</textPath>
+  </text>
+  <text font-family="Georgia, 'Times New Roman', serif" font-size="22" font-weight="400" letter-spacing="6" fill="#F7F3E8" opacity="0.85">
+    <textPath href="#zmts-arc-bottom" startOffset="50%" text-anchor="middle">BLACK4 FANTASY FOOTBALL</textPath>
+  </text>
+
+  <!-- Ring separators -->
+  <rect x="38" y="252" width="8" height="8" transform="rotate(45 42 256)" fill="#F0B429"/>
+  <rect x="466" y="252" width="8" height="8" transform="rotate(45 470 256)" fill="#F0B429"/>
+
+  <!-- Treasure trail (dotted route, Signal Blue) -->
+  <path d="M 172,404 C 205,375 235,340 252,272" fill="none" stroke="#4C8DFF" stroke-width="5" stroke-linecap="round" stroke-dasharray="1 13"/>
+
+  <!-- The football setting out -->
+  <g transform="rotate(35 150 414)">
+    <ellipse cx="150" cy="414" rx="18" ry="11" fill="#F7F3E8"/>
+    <line x1="143" y1="414" x2="157" y2="414" stroke="#0B0E14" stroke-width="2"/>
+    <line x1="150" y1="410" x2="150" y2="418" stroke="#0B0E14" stroke-width="2"/>
+  </g>
+
+  <!-- The Z (Treasure Gold) -->
+  <path d="M168,156 H344 V196 L232,316 H344 V356 H168 V316 L280,196 H168 Z" fill="#F0B429"/>
+
+  <!-- The spot (Signal Blue star on the Z diagonal) -->
+  <path d="M256,236 L261,251 L276,256 L261,261 L256,276 L251,261 L236,256 L251,251 Z" fill="#4C8DFF"/>
+</svg>

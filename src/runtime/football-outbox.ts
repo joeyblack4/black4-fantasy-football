@@ -1,4 +1,8 @@
 import {
+  assertNoConversationSession,
+  conversationLeagueClosedPredicate,
+} from "./conversation.js";
+import {
   assertRehearsalClaim,
   assertRehearsalReconciliation,
   rehearsalClaimPredicate,
@@ -47,6 +51,7 @@ export async function enqueueFootball(tx: Tx, job: Job, input: FootballAction) {
   await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1,7044))", [
     binding.league_id,
   ]);
+  await assertNoConversationSession(tx, binding.league_id);
   const host = await getFootballHost(tx, binding.league_id);
   assert(
     (host.kind === "mfl") ===
@@ -233,7 +238,7 @@ export class FootballOutbox {
     return transaction(this.db, async (tx) => {
       const candidate = (
         await tx.query(
-          `SELECT o.id,o.league_id FROM runtime_football_outbox o JOIN runtime_jobs j ON j.id=o.job_id WHERE ($1::text[] IS NULL OR o.agent_id=ANY($1::text[])) AND ${rehearsalClaimPredicate("j")} AND o.status IN ('pending','running') AND o.next_attempt_at<=clock_timestamp() AND (o.status='pending' OR o.lease_until<=clock_timestamp()) ORDER BY o.next_attempt_at,o.id LIMIT 1`,
+          `SELECT o.id,o.league_id FROM runtime_football_outbox o JOIN runtime_jobs j ON j.id=o.job_id WHERE ($1::text[] IS NULL OR o.agent_id=ANY($1::text[])) AND ${conversationLeagueClosedPredicate("o.league_id")} AND ${rehearsalClaimPredicate("j")} AND o.status IN ('pending','running') AND o.next_attempt_at<=clock_timestamp() AND (o.status='pending' OR o.lease_until<=clock_timestamp()) ORDER BY o.next_attempt_at,o.id LIMIT 1`,
           [allowedAgentIds ?? null],
         )
       ).rows[0];
@@ -244,7 +249,7 @@ export class FootballOutbox {
       );
       const row = (
         await tx.query(
-          `SELECT o.* FROM runtime_football_outbox o JOIN runtime_jobs j ON j.id=o.job_id WHERE o.id=$1 AND o.league_id=$2 AND ($3::text[] IS NULL OR o.agent_id=ANY($3::text[])) AND ${rehearsalClaimPredicate("j")} AND o.status IN ('pending','running') AND o.next_attempt_at<=clock_timestamp() AND (o.status='pending' OR o.lease_until<=clock_timestamp()) FOR UPDATE OF o SKIP LOCKED`,
+          `SELECT o.* FROM runtime_football_outbox o JOIN runtime_jobs j ON j.id=o.job_id WHERE o.id=$1 AND o.league_id=$2 AND ($3::text[] IS NULL OR o.agent_id=ANY($3::text[])) AND ${conversationLeagueClosedPredicate("o.league_id")} AND ${rehearsalClaimPredicate("j")} AND o.status IN ('pending','running') AND o.next_attempt_at<=clock_timestamp() AND (o.status='pending' OR o.lease_until<=clock_timestamp()) FOR UPDATE OF o SKIP LOCKED`,
           [candidate.id, candidate.league_id, allowedAgentIds ?? null],
         )
       ).rows[0];
@@ -283,6 +288,8 @@ export class FootballOutbox {
   }
   private async context(claim: FootballClaim, readOnlyReconciliation = false) {
     return transaction(this.db, async (tx) => {
+      if (!readOnlyReconciliation)
+        await assertNoConversationSession(tx, claim.league_id);
       const row = await this.check(tx, claim);
       const recovery = readOnlyReconciliation
         ? await assertRehearsalReconciliation(tx, {

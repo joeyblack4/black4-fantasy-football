@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Z Marks the Spot avatar">
+  <!-- Avatar crop: readable at 64px. No lettering. -->
+  <!-- Midnight Ink #0B0E14 · Treasure Gold #F0B429 · Signal Blue #4C8DFF · Chart Cream #F7F3E8 -->
+
+  <rect x="0" y="0" width="256" height="256" rx="52" fill="#0B0E14"/>
+  <rect x="10" y="10" width="236" height="236" rx="44" fill="none" stroke="#F0B429" stroke-width="6"/>
+
+  <!-- Treasure trail -->
+  <path d="M 74,208 C 92,190 108,170 123,141" fill="none" stroke="#4C8DFF" stroke-width="5" stroke-linecap="round" stroke-dasharray="1 13"/>
+
+  <!-- The Z -->
+  <path d="M84,78 H172 V98 L116,158 H172 V178 H84 V158 L140,98 H84 Z" fill="#F0B429"/>
+
+  <!-- The spot -->
+  <path d="M128,113 L131,125 L143,128 L131,131 L128,143 L125,131 L113,128 L125,125 Z" fill="#4C8DFF"/>
+
+  <!-- Football at trail start -->
+  <g transform="rotate(35 68 214)">
+    <ellipse cx="68" cy="214" rx="11" ry="7" fill="#F7F3E8"/>
+    <line x1="63" y1="214" x2="73" y2="214" stroke="#0B0E14" stroke-width="1.6"/>
+  </g>
+</svg>

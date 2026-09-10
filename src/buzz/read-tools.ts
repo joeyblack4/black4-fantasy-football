@@ -1,15 +1,17 @@
 import { ApiError } from "../auth.js";
 import { z } from "zod";
 import type { Db } from "../db.js";
+import { assertConversationJob } from "../runtime/conversation.js";
 import type { OwnerReadTool } from "../providers/openrouter.js";
 import type { Job } from "../runtime/index.js";
 import { BuzzArchiveService } from "./archive.js";
 
 async function principal(db: Db, job: Job) {
+  const conversation = await assertConversationJob(db, job);
   const row = (
     await db.query(
-      `SELECT b.league_id,b.team_id,t.owner_id FROM runtime_jobs j JOIN runtime_agents a ON a.id=j.agent_id JOIN runtime_bindings b ON b.agent_id=a.id JOIN league_teams t ON t.league_id=b.league_id AND t.id=b.team_id WHERE j.id=$1 AND j.agent_id=$2 AND j.fence=$3 AND j.worker_id=$4 AND j.status='running' AND j.lease_until>clock_timestamp() AND a.enabled AND a.kind='ai' AND t.kind='ai' AND a.model=$5`,
-      [job.id, job.agentId, job.fence, job.workerId, job.model],
+      `SELECT b.league_id,b.team_id,t.owner_id FROM runtime_jobs j JOIN runtime_agents a ON a.id=j.agent_id JOIN runtime_bindings b ON b.agent_id=a.id JOIN league_teams t ON t.league_id=b.league_id AND t.id=b.team_id WHERE j.id=$1 AND j.agent_id=$2 AND j.fence=$3 AND j.worker_id=$4 AND j.status='running' AND j.lease_until>clock_timestamp() AND (a.enabled OR ($6::boolean AND j.execution_mode='conversation')) AND a.kind='ai' AND t.kind='ai' AND a.model=$5`,
+      [job.id, job.agentId, job.fence, job.workerId, job.model, !!conversation],
     )
   ).rows[0];
   if (!row) throw Error("BUZZ_READ_JOB_AUTHORITY_EXPIRED");
@@ -18,6 +20,8 @@ async function principal(db: Db, job: Job) {
     role: "owner" as const,
     leagueId: row.league_id,
     teamId: row.team_id,
+    conversationChannelIds: conversation?.configuration.channelIds as
+      string[] | undefined,
   };
 }
 const schema = z.discriminatedUnion("type", [
@@ -118,6 +122,12 @@ export function createBuzzChannelReadTools(db: Db): OwnerReadTool[] {
         const v = schema.parse(input),
           actor = await principal(db, job),
           archive = new BuzzArchiveService(db);
+        if (
+          v.type !== "channels" &&
+          actor.conversationChannelIds &&
+          !actor.conversationChannelIds.includes(v.channelId)
+        )
+          throw Error("CONVERSATION_CHANNEL_FORBIDDEN");
         let result: unknown;
         if (v.type === "channels") {
           const channels = await archive.list(actor, actor.leagueId);
@@ -128,17 +138,23 @@ export function createBuzzChannelReadTools(db: Db): OwnerReadTool[] {
             )
           ).rows;
           result = {
-            channels: channels.map((c) => ({
-              channelId: c.channel_id,
-              kind: c.kind,
-              participants: peers
-                .filter((p) => c.member_pubkeys.includes(p.pubkey))
-                .map((p) => ({
-                  agentId: p.agent_id,
-                  teamId: p.team_id,
-                  kind: p.kind,
-                })),
-            })),
+            channels: channels
+              .filter(
+                (c) =>
+                  !actor.conversationChannelIds ||
+                  actor.conversationChannelIds.includes(c.channel_id),
+              )
+              .map((c) => ({
+                channelId: c.channel_id,
+                kind: c.kind,
+                participants: peers
+                  .filter((p) => c.member_pubkeys.includes(p.pubkey))
+                  .map((p) => ({
+                    agentId: p.agent_id,
+                    teamId: p.team_id,
+                    kind: p.kind,
+                  })),
+              })),
             archiveIsPublic: false,
           };
         } else if (v.type === "event") {

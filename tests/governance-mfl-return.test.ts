@@ -8,6 +8,7 @@ import { GovernanceService } from "../src/governance/index.js";
 import {
   prepareMflReturnAnchor,
   revalidateMflReturn,
+  revalidateMflTrialDecision,
 } from "../src/governance/mfl.js";
 import { fingerprint } from "../src/governance/validation.js";
 
@@ -155,7 +156,7 @@ async function fixture() {
   };
   const anchor = () => prepareMflReturnAnchor(f.db, c, anchorInput);
   const epoch = "synthetic-epoch";
-  async function restore() {
+  async function restore(duringTrial?: () => Promise<void>) {
     const original = await hostBinding(f.db, leagueId);
     await f.db.query(
       "INSERT INTO runtime_rehearsals(league_id,epoch,status,request_hash,original_host,cap_micros,synthetic,operator_evidence_ref,reason,configured_by,start_receipt_seq) VALUES($1,$2,'arming','synthetic',$3,100,false,'synthetic','SYNTHETIC fake epoch for contract tests','operator',0)",
@@ -189,6 +190,7 @@ async function fixture() {
         { leagueId, epoch, reason: "SYNTHETIC stop fixture" },
       ],
     );
+    if (duringTrial) await duringTrial();
     const restored = await bindHost(f.db, c, {
       leagueId,
       expectedVersion: 2,
@@ -642,6 +644,187 @@ it("rejects seven actual owners and a second candidate version rather than manuf
       (await f.db.query("SELECT count(*)::int n FROM mfl_governance_votes"))
         .rows[0].n,
     ).toBe(7);
+  } finally {
+    await f.close();
+  }
+});
+
+it("projects an eleven-owner trial-authored constitution onto the exact restore without rewriting votes or approving another decision", async () => {
+  const f = await fixture();
+  try {
+    const a = await f.anchor();
+    let decision: any;
+    let menuHash = "";
+    await f.restore(async () => {
+      // The original trial roster and anchor stay historical; the new electorate has eleven AI owners.
+      await f.db.query("UPDATE league_teams SET kind='ai' WHERE id='team10'");
+      await f.db.query(
+        "UPDATE runtime_agents SET kind='ai' WHERE id='agent10'",
+      );
+      const oldMenu = (
+        await f.db.query(
+          "SELECT content FROM mfl_governance_menus WHERE id='menu'",
+        )
+      ).rows[0].content;
+      await f.exec(f.c, {
+        ...oldMenu,
+        type: "registerMflMenu",
+        menuId: "native-menu",
+      });
+      await f.exec(f.c, {
+        type: "openMeeting",
+        meetingId: "native-meeting",
+        menuId: "native-menu",
+        proposalDeadline: new Date(Date.now() + 60000).toISOString(),
+        voteDeadline: new Date(Date.now() + 120000).toISOString(),
+      });
+      await f.exec(f.owners[0]!, {
+        type: "submitMflProposal",
+        meetingId: "native-meeting",
+        proposalId: "native-candidate",
+        version: "v2",
+        title: "SYNTHETIC native owner rules",
+        rationale: "SYNTHETIC exact current owner decision",
+        menuId: "native-menu",
+        selections: { scoring: "ppr" },
+        teamOrder: f.owners.map((o) => o.teamId),
+        leaguePolicies: "SYNTHETIC honors and prospective amendment policy",
+      });
+      await f.db.query(
+        "UPDATE mfl_governance_meetings SET proposal_deadline=clock_timestamp()-interval '1 second' WHERE id='native-meeting'",
+      );
+      for (const o of f.owners.slice(0, 11))
+        await f.exec(o, {
+          type: "castVote",
+          proposalId: "native-candidate",
+          choice: "yes",
+        });
+      await f.db.query(
+        "UPDATE mfl_governance_meetings SET vote_deadline=clock_timestamp()-interval '1 millisecond' WHERE id='native-meeting'",
+      );
+      decision = (
+        await f.exec(f.c, {
+          type: "prepareRatification",
+          proposalId: "native-candidate",
+        })
+      ).result;
+      menuHash = (
+        await f.db.query(
+          "SELECT content_hash FROM mfl_governance_menus WHERE id='native-menu'",
+        )
+      ).rows[0].content_hash;
+    });
+    const before = (
+      await f.db.query(
+        "SELECT * FROM mfl_governance_votes ORDER BY proposal_id,team_id",
+      )
+    ).rows;
+    const input = {
+      leagueId: f.leagueId,
+      idempotencyKey: "native-return",
+      expectedHostVersion: 3,
+      anchorReceiptId: a.receiptId,
+      rehearsalEpoch: f.epoch,
+      mapping: f.mapping,
+      decisionId: decision.decisionId,
+      proposalId: "native-candidate",
+      proposalHash: decision.proposalHash,
+      menuHash,
+      reason: "SYNTHETIC trial-authored decision return",
+      evidenceRef: "synthetic:native-decision-return",
+    };
+    await expect(
+      revalidateMflTrialDecision(f.db, f.c, {
+        ...input,
+        proposalHash: "0".repeat(64),
+      }),
+    ).rejects.toMatchObject({ code: "REVALIDATION_CANDIDATE_MISMATCH" });
+    const r = await revalidateMflTrialDecision(f.db, f.c, input);
+    expect(r.result).toMatchObject({
+      approved: false,
+      configured: false,
+      externalWritePerformed: false,
+      evidence: {
+        trialAuthored: true,
+        candidateHostVersion: 2,
+        currentHostVersion: 3,
+        decisionId: decision.decisionId,
+      },
+    });
+    expect((await revalidateMflTrialDecision(f.db, f.c, input)).receiptId).toBe(
+      r.receiptId,
+    );
+    await expect(
+      f.exec(f.c, {
+        type: "approveMflConstitution",
+        decisionId: f.decision.decisionId,
+        proposalId: "candidate",
+        proposalHash: f.decision.proposalHash,
+        version: "v1",
+        revalidationReceiptId: r.receiptId,
+      }),
+    ).rejects.toMatchObject({ code: "REVALIDATION_DECISION_MISMATCH" });
+    const approval = await f.exec(f.c, {
+      type: "approveMflConstitution",
+      decisionId: decision.decisionId,
+      proposalId: "native-candidate",
+      proposalHash: decision.proposalHash,
+      version: "v2",
+      revalidationReceiptId: r.receiptId,
+    });
+    expect(approval.result).toMatchObject({
+      hostVersion: 3,
+      proposalId: "native-candidate",
+    });
+    const observedAt = (
+      await f.db.query("SELECT clock_timestamp() AS now")
+    ).rows[0].now.toISOString();
+    const application = await f.exec(f.c, {
+      type: "recordMflApplication",
+      approvalId: approval.result.approvalId,
+      proposalHash: decision.proposalHash,
+      hostVersion: 3,
+      attestation: "matches-approved-constitution",
+      evidence: [
+        {
+          sectionId: "scoring",
+          nativeScope: {
+            host: "www43.myfantasyleague.com",
+            season: 2026,
+            leagueId: "62282",
+          },
+          source: "mfl-api",
+          reference: "synthetic:eleven-native-owners-production",
+          observedHash: "a".repeat(64),
+          summary: "SYNTHETIC exact production readback; no native calls",
+          observedAt,
+        },
+      ],
+    });
+    expect(application.result).toMatchObject({
+      hostVersion: 3,
+      approvalId: approval.result.approvalId,
+    });
+    expect(
+      (
+        await f.db.query(
+          "SELECT * FROM mfl_governance_votes ORDER BY proposal_id,team_id",
+        )
+      ).rows,
+    ).toEqual(before);
+    expect(
+      (
+        await f.db.query(
+          "SELECT host_version FROM mfl_governance_decisions ORDER BY host_version",
+        )
+      ).rows,
+    ).toEqual([{ host_version: 1 }, { host_version: 2 }]);
+    await f.db.query(
+      "UPDATE mfl_governance_votes SET owner_id='changed-owner' WHERE proposal_id='native-candidate' AND team_id='team10'",
+    );
+    await expect(
+      revalidateMflTrialDecision(f.db, f.c, input),
+    ).rejects.toMatchObject({ code: "REVALIDATION_DECISION_CHANGED" });
   } finally {
     await f.close();
   }

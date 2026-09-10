@@ -15,6 +15,7 @@ import { bindHost, hostBinding } from "../src/league/host.js";
 import { transaction } from "../src/db.js";
 import { randomUUID } from "node:crypto";
 import { fingerprint } from "../src/governance/validation.js";
+import { hash as mflHash } from "../src/mfl/codec.js";
 import { FranchiseService } from "../src/franchise/service.js";
 import { GovernanceService } from "../src/governance/index.js";
 import type { Db } from "../src/db.js";
@@ -971,6 +972,93 @@ it.each(["verified", "rejected", "unknown"] as const)(
       ]);
       await enable();
       expect((await run()).status).toBe("idle");
+    } else {
+      const draft = {
+        round: 1,
+        pick: 1,
+        picks: [{ round: 1, pick: 1, franchiseId: "0001", playerId: null }],
+      };
+      const op = { ...official, before: draft };
+      const operation = (
+        await f.db.query(
+          "INSERT INTO runtime_receipts(type,details) VALUES('mfl_operation',$1) RETURNING seq",
+          [op],
+        )
+      ).rows[0];
+      const readId = randomUUID();
+      await f.db.query(
+        "INSERT INTO runtime_receipts(type,details) VALUES('mfl_read',$1)",
+        [
+          {
+            id: readId,
+            scope: op.scope,
+            actorId: actor.id,
+            actorRole: "commissioner",
+            request: { type: "draft" },
+            resultHash: mflHash(draft),
+          },
+        ],
+      );
+      const input = {
+        epoch,
+        outboxId: claim.id,
+        operationId: op.id,
+        expectedOperationSeq: String(operation.seq),
+        operationHash: fingerprint(op),
+        draftReadReceiptId: readId,
+        draft,
+        reason: "SYNTHETIC explicitly retire uncertain trial without replay",
+        evidenceRef: "synthetic:quarantine-test",
+      };
+      await expect(
+        service.quarantineRetiredTrialIntent(actor, {
+          ...input,
+          operationHash: "0".repeat(64),
+        }),
+      ).rejects.toThrow("REHEARSAL_QUARANTINE_OPERATION_MISMATCH");
+      await expect(
+        service.quarantineRetiredTrialIntent(actor, {
+          ...input,
+          draft: { ...draft, pick: 2 },
+        }),
+      ).rejects.toThrow("REHEARSAL_FRESH_TRIAL_READ_REQUIRED");
+      const quarantine = await service.quarantineRetiredTrialIntent(
+        actor,
+        input,
+      );
+      expect(quarantine).toMatchObject({
+        journalState: "unknown",
+        upstreamRejectionProven: false,
+        replayAuthorized: false,
+        preservedPicks: 0,
+      });
+      expect(
+        (await service.quarantineRetiredTrialIntent(actor, input)).receiptId,
+      ).toBe(quarantine.receiptId);
+      expect(
+        (
+          await f.db.query(
+            "SELECT details FROM runtime_receipts WHERE seq=$1",
+            [operation.seq],
+          )
+        ).rows[0].details,
+      ).toEqual(op);
+      expect(
+        (
+          await f.db.query(
+            "SELECT status,error FROM runtime_football_outbox WHERE id=$1",
+            [claim.id],
+          )
+        ).rows[0],
+      ).toMatchObject({
+        status: "dead",
+        error: "RETIRED_TRIAL_UNKNOWN_QUARANTINED",
+      });
+      await service.restore(actor, {
+        epoch,
+        reason: "SYNTHETIC return after retiring exact uncertain trial intent",
+      });
+      expect(posts).toBe(0);
     }
   },
 );

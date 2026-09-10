@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" width="1280" height="360" role="img" aria-label="Colossus wordmark">
+  <title>Colossus</title>
+  <rect width="1280" height="360" fill="#0B0B0C"/>
+  <text x="640" y="188" text-anchor="middle" fill="#E8E2D2" font-family="Impact, 'Arial Narrow', 'Helvetica Neue', sans-serif" font-size="112" letter-spacing="28">COLOSSUS</text>
+  <rect x="220" y="232" width="840" height="6" fill="#C47A32"/>
+  <text x="640" y="286" text-anchor="middle" fill="#E6B84D" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="22" letter-spacing="10">WE TAKE UP SPACE</text>
+</svg>

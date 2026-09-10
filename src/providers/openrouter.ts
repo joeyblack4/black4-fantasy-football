@@ -311,9 +311,11 @@ export class OpenRouterDriver implements AgentDriver {
     }
     const stagePermissions = (context as any)?.ownerStage?.activePermissions;
     const rehearsalPermissions = (context as any)?.rehearsal?.activePermissions;
-    const permissionScopes = [stagePermissions, rehearsalPermissions].filter(
-      (p) => p !== undefined,
-    );
+    const permissionScopes = [
+      stagePermissions,
+      rehearsalPermissions,
+      (context as any)?.conversation?.activePermissions,
+    ].filter((p) => p !== undefined);
     if (
       permissionScopes.some(
         (scope) =>

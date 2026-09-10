@@ -15,6 +15,7 @@ import {
   MflMenuSchema,
   PrepareMflReturnAnchorSchema,
   RevalidateMflReturnSchema,
+  RevalidateMflTrialDecisionSchema,
   MflProductionMappingSchema,
   type MflMenu,
 } from "./mfl-schema.js";
@@ -500,7 +501,7 @@ export async function executeMflGovernance(
         tx,
         actor.leagueId,
         command.proposalId,
-        restored?.anchor.originalHost.version ?? host.version,
+        restored?.candidateHostVersion ?? host.version,
         now,
       );
       const decision = (
@@ -514,7 +515,7 @@ export async function executeMflGovernance(
           decision.proposal_id === p.id &&
           decision.proposal_hash === p.content_hash &&
           decision.host_version ===
-            (restored?.anchor.originalHost.version ?? host.version),
+            (restored?.candidateHostVersion ?? host.version),
         "GOVERNANCE_DECISION_REQUIRED",
         "Exact prepared decision is required",
       );
@@ -598,7 +599,7 @@ export async function executeMflGovernance(
         tx,
         actor.leagueId,
         approved.proposal_id,
-        restored?.anchor.originalHost.version ?? host.version,
+        restored?.candidateHostVersion ?? host.version,
         now,
       );
       if (restored)
@@ -841,6 +842,7 @@ async function candidateEvidence(
   originalHost: HostBinding,
   mapping: ReturnType<typeof productionMapping>,
   now: Date,
+  nativeTrial = false,
 ) {
   const decision = (
     await tx.query(
@@ -875,8 +877,10 @@ async function candidateEvidence(
   ).rows;
   guard(
     rawMembers.length === 12 &&
-      rawMembers.filter((r) => r.kind === "ai").length === 10 &&
-      rawMembers.filter((r) => r.kind === "human").length === 2 &&
+      rawMembers.filter((r) => r.kind === "ai").length ===
+        (nativeTrial ? 11 : 10) &&
+      rawMembers.filter((r) => r.kind === "human").length ===
+        (nativeTrial ? 1 : 2) &&
       new Set(rawMembers.map((r) => r.teamId)).size === 12,
     "REVALIDATION_TWELVE_MEMBERS_REQUIRED",
     "Exact twelve-team mapping required",
@@ -893,7 +897,7 @@ async function candidateEvidence(
     ) &&
       members
         .filter((m) => m.kind === "ai")
-        .every((m) => m.agentId && m.model && m.manifestId),
+        .every((m) => m.agentId && m.model && (nativeTrial || m.manifestId)),
     "REVALIDATION_MAPPING_MISMATCH",
     "Verified production franchise map must match all current owners and pinned model manifests",
   );
@@ -1151,6 +1155,36 @@ async function validateReturnReceipt(
     current,
   );
   const mapping = productionMapping(current, result.evidence.mapping);
+  if (result.evidence.trialAuthored === true) {
+    const candidateHost = HostBindingSchema.parse(lineage.trialHost);
+    const candidate = await candidateEvidence(
+      tx,
+      leagueId,
+      result.evidence.decisionId,
+      candidateHost,
+      mapping,
+      now,
+      true,
+    );
+    guard(
+      result.evidence.candidateHostVersion === candidateHost.version &&
+        candidate.proposal.id === result.evidence.proposalId &&
+        candidate.proposal.content_hash === result.evidence.proposalHash &&
+        evidenceHash(lineage) === result.evidence.lineageHash &&
+        evidenceHash(candidate) === result.evidence.candidateHash,
+      "REVALIDATION_EVIDENCE_CHANGED",
+      "Trial-authored candidate, votes, mapping or lineage changed",
+    );
+    return {
+      anchor: {
+        ...anchor,
+        decisionId: candidate.decision.id,
+        proposalId: candidate.proposal.id,
+      },
+      result,
+      candidateHostVersion: candidateHost.version,
+    };
+  }
   const candidate = await candidateEvidence(
     tx,
     leagueId,
@@ -1166,7 +1200,7 @@ async function validateReturnReceipt(
     "REVALIDATION_EVIDENCE_CHANGED",
     "Original candidate, votes, mappings or host lineage changed",
   );
-  return { anchor, result };
+  return { anchor, result, candidateHostVersion: anchor.originalHost.version };
 }
 async function operatorReturnTransaction(
   db: Db,
@@ -1386,6 +1420,83 @@ export async function revalidateMflReturn(
           lineage,
           lineageHash: evidenceHash(lineage),
           candidateHash: anchor.candidateHash,
+          reason: request.reason,
+          evidenceRef: request.evidenceRef,
+        },
+      };
+    },
+  );
+}
+
+/** Preserve a newly voted trial constitution across the canonical production return.
+ * The old anchor proves host lineage only; it never supplies votes for this candidate.
+ */
+export async function revalidateMflTrialDecision(
+  db: Db,
+  actor: Actor,
+  input: unknown,
+) {
+  const request = RevalidateMflTrialDecisionSchema.parse(input);
+  return operatorReturnTransaction(
+    db,
+    actor,
+    request,
+    async (tx, host, now) => {
+      guard(
+        host.version === request.expectedHostVersion,
+        "HOST_VERSION_CONFLICT",
+        "Expected restored production host required",
+      );
+      await returnQuiescence(tx, actor.leagueId);
+      const { result: prepared } = await returnReceipt(
+        tx,
+        actor.leagueId,
+        request.anchorReceiptId,
+        "mfl-return-anchor",
+      );
+      const lineage = await validateReturnLineage(
+        tx,
+        actor.leagueId,
+        prepared.evidence,
+        request.rehearsalEpoch,
+        host,
+      );
+      const candidateHost = HostBindingSchema.parse(lineage.trialHost);
+      const mapping = productionMapping(host, request.mapping);
+      const candidate = await candidateEvidence(
+        tx,
+        actor.leagueId,
+        request.decisionId,
+        candidateHost,
+        mapping,
+        now,
+        true,
+      );
+      guard(
+        candidate.proposal.id === request.proposalId &&
+          candidate.proposal.content_hash === request.proposalHash &&
+          candidate.menu.content_hash === request.menuHash,
+        "REVALIDATION_CANDIDATE_MISMATCH",
+        "Exact trial-authored candidate and menu required",
+      );
+      return {
+        type: "mfl-decision-revalidated",
+        evidence: {
+          trialAuthored: true,
+          decisionId: request.decisionId,
+          proposalId: request.proposalId,
+          proposalHash: request.proposalHash,
+          menuHash: request.menuHash,
+          anchorReceiptId: request.anchorReceiptId,
+          rehearsalEpoch: request.rehearsalEpoch,
+          originalHostVersion: prepared.evidence.originalHost.version,
+          candidateHostVersion: candidateHost.version,
+          currentHostVersion: host.version,
+          mapping,
+          lineage,
+          lineageHash: evidenceHash(lineage),
+          candidateHash: evidenceHash(candidate),
+          candidate,
           reason: request.reason,
           evidenceRef: request.evidenceRef,
         },

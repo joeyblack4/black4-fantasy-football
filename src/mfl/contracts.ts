@@ -100,6 +100,70 @@ export const MflOwnerActionSchema = z.discriminatedUnion("type", [
 ]);
 export type MflOwnerAction = z.infer<typeof MflOwnerActionSchema>;
 export const MflOwnerReadSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("playoffBrackets") }).strict(),
+  z
+    .object({
+      type: z.literal("playoffBracket"),
+      bracketId: z.string().regex(/^\d{1,10}$/),
+    })
+    .strict(),
+  z.object({ type: z.literal("capabilities") }).strict(),
+  z.object({ type: z.literal("leagueSettings") }).strict(),
+  z.object({ type: z.literal("scoringRules") }).strict(),
+  z.object({ type: z.literal("teams") }).strict(),
+  z.object({ type: z.literal("standings") }).strict(),
+  z.object({ type: z.literal("waiverRules") }).strict(),
+  z
+    .object({
+      type: z.literal("validateBids"),
+      round: z.number().int().min(1).max(100),
+      bids: MflOwnerActionSchema.options[3].shape.bids,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("calendar"),
+      week: z.number().int().min(1).max(22),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("lineups"),
+      week: z.number().int().min(1).max(22),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("results"),
+      week: z.number().int().min(1).max(22),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("transactions"),
+      week: z.number().int().min(1).max(22).optional(),
+      days: z.number().int().min(1).max(366).optional(),
+      since: z.iso.datetime().optional(),
+      until: z.iso.datetime().optional(),
+      limit: z.number().int().min(1).max(200).default(100),
+    })
+    .strict()
+    .refine(
+      (v) => !v.week || (!v.days && !v.since && !v.until),
+      "Use either MFL transaction week or time filters; transaction week is not the lineup week",
+    )
+    .refine(
+      (v) => !v.since || !v.until || Date.parse(v.since) < Date.parse(v.until),
+      "since must be before until",
+    ),
+  z.object({ type: z.literal("availability"), playerIds: ids.min(1) }).strict(),
+  z
+    .object({
+      type: z.literal("validateLineup"),
+      week: z.number().int().min(1).max(22),
+      starters: z.array(PlayerId).max(100),
+    })
+    .strict(),
   z.object({ type: z.literal("roster") }).strict(),
   z.object({ type: z.literal("rosters") }).strict(),
   z.object({ type: z.literal("pendingBids") }).strict(),
@@ -111,6 +175,9 @@ export const MflOwnerReadSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("players"),
       position: z.string().max(10).optional(),
+      playerIds: ids.optional(),
+      nflTeam: z.string().max(10).optional(),
+      unowned: z.boolean().optional(),
       search: z.string().max(100).optional(),
       limit: z.number().int().min(1).max(200).default(100),
       offset: z.number().int().min(0).max(100000).default(0),
@@ -144,6 +211,7 @@ export type MflReceipt = {
   synthetic: boolean;
   at: string;
   reason?: string;
+  details?: Record<string, unknown>;
   responseHash?: string;
   upstreamAccepted?: boolean;
   upstreamRejected?: boolean;
@@ -153,7 +221,14 @@ export type MflReceipt = {
   replayed?: boolean;
 };
 export class MflError extends Error {
-  constructor(public code: string) {
+  constructor(
+    public code: string,
+    public details?: {
+      issues?: unknown[];
+      unknowns?: string[];
+      [key: string]: unknown;
+    },
+  ) {
     super(code);
   }
 }
@@ -167,7 +242,8 @@ export type MflReadReceipt = {
 };
 export type MflJournalSession = {
   cached(key: string, maxAgeSeconds: number): Promise<unknown | null>;
-  beforeRequest(intervalMs: number): Promise<void>;
+  beforeRequest(intervalMs: number, providerKey?: string): Promise<void>;
+  withProviderLock?<T>(key: string, work: () => Promise<T>): Promise<T>;
   find(key: string): Promise<MflReceipt | null>;
   unresolved(): Promise<MflReceipt[]>;
   append(receipt: Omit<MflReceipt, "at">): Promise<MflReceipt>;
