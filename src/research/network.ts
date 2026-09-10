@@ -83,6 +83,44 @@ export function permittedUrl(
   if (!source) throw new ResearchError("URL_NOT_PERMITTED");
   return { url, source };
 }
+/** Explicit operator opt-in. Public means network reachability, not editorial trust. */
+export function generalPublicUrl(input: string) {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    throw new ResearchError("URL_NOT_PERMITTED");
+  }
+  const hostname = url.hostname.toLowerCase();
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.search ||
+    url.hash ||
+    input.length > 2000 ||
+    /[\\\x00-\x20]/.test(input) ||
+    /%(?:2f|5c|2e|00)/i.test(url.pathname) ||
+    isIP(hostname) ||
+    hostname.includes(":") ||
+    !hostname.includes(".") ||
+    /\.(?:localhost|local|internal|test|invalid|onion)\.?$/.test(hostname) ||
+    hostname.endsWith(".")
+  )
+    throw new ResearchError("URL_NOT_PERMITTED");
+  const source: ResearchSource = {
+    id: "public-web:" + hostname,
+    name: hostname + " (unverified public source)",
+    origin: url.origin,
+    paths: ["/"],
+    homeUrl: url.origin + "/",
+    cacheSeconds: 60,
+    verifiedAt: "not-preverified",
+    access: "public-free",
+  };
+  return { url, source };
+}
 export function isPublicAddress(address: string): boolean {
   const family = isIP(address);
   if (family === 4) {
@@ -122,6 +160,8 @@ export type HttpDocument = {
 export type ResearchTransport = (url: URL) => Promise<HttpDocument>;
 /** HTTPS socket pins the validated DNS address; redirects, arbitrary headers and proxies are never followed. */
 export const securePublicGet: ResearchTransport = async (url) => {
+  // Defense in depth even if a trusted caller forgets its policy validator.
+  generalPublicUrl(url.href);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let addresses: { address: string; family: number }[];
   try {

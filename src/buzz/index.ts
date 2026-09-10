@@ -118,9 +118,63 @@ export function planSend(
     ],
   };
 }
-export type CliRunner = (
-  plan: BuzzPlan,
-) => Promise<{ exitCode: number | null; stdout: string }>;
+export type CliRunner = (plan: BuzzPlan) => Promise<{
+  exitCode: number | null;
+  stdout: string;
+  diagnostic?: CliDiagnostic;
+}>;
+type CliDiagnostic = {
+  termination:
+    "exited" | "timeout" | "stdout_limit" | "spawn_error" | "runner_exception";
+  stderrCategory: string | null;
+  stderrMessageClass: string | null;
+  stdoutBytes: number;
+  stderrBytes: number;
+  stderrTruncated: boolean;
+};
+function classifyCliStderr(stderr: string) {
+  let data: any;
+  try {
+    data = JSON.parse(stderr);
+  } catch {
+    return {
+      stderrCategory: null,
+      stderrMessageClass: stderr ? "Unstructured CLI error withheld" : null,
+    };
+  }
+  const categories = [
+    "user_error",
+    "relay_error",
+    "network_error",
+    "auth_error",
+    "key_error",
+    "conflict",
+    "not_found",
+    "delivery_unknown",
+    "other_error",
+  ];
+  const message = typeof data?.message === "string" ? data.message : "";
+  return {
+    stderrCategory: categories.includes(data?.error)
+      ? (data.error as string)
+      : "unrecognized",
+    stderrMessageClass: /mentioned pubkeys are not channel members/i.test(
+      message,
+    )
+      ? "Mentioned identity is not a channel member"
+      : /ambiguous|unresolved.*mention|unknown.*mention/i.test(message)
+        ? "Mention resolution failed"
+        : /timeout|timed out/i.test(message)
+          ? "CLI request timed out"
+          : /connect|dns|lookup address/i.test(message)
+            ? "CLI connection failed"
+            : /unauthor|forbidden|auth/i.test(message)
+              ? "CLI authorization failed"
+              : message
+                ? "CLI error details withheld"
+                : null,
+  };
+}
 /** Explicitly opt in when constructing a real runner. Nothing executes on import or planning. */
 export function createCliRunner(options: {
   executable: string;
@@ -149,30 +203,54 @@ export function createCliRunner(options: {
       throw new Error("Runner community does not match plan");
     if (!options.environment.BUZZ_PRIVATE_KEY)
       throw new Error("Scoped signing key required");
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const child = spawn(options.executable, plan.args, {
         shell: false,
         env: { PATH: "/usr/bin:/bin", ...options.environment },
-        stdio: ["pipe", "pipe", "ignore"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
-      let stdout = "";
+      let stdout = "",
+        stderr = "",
+        stderrBytes = 0,
+        stdoutBytes = 0;
       let overflow = false;
-      const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+      let termination: CliDiagnostic["termination"] = "exited";
+      const diagnostic = (): CliDiagnostic => ({
+        termination,
+        ...classifyCliStderr(stderr),
+        stdoutBytes,
+        stderrBytes,
+        stderrTruncated: stderrBytes > 16384,
+      });
+      const timer = setTimeout(() => {
+        termination = "timeout";
+        child.kill("SIGKILL");
+      }, 30_000);
       child.stdout.on("data", (chunk) => {
-        stdout += String(chunk);
-        if (Buffer.byteLength(stdout) > 65536) {
+        stdoutBytes += Buffer.byteLength(chunk);
+        if (stdoutBytes > 65536) {
           overflow = true;
+          termination = "stdout_limit";
+          stdout = "";
           child.kill("SIGKILL");
-        }
+        } else stdout += String(chunk);
+      });
+      child.stderr.on("data", (chunk) => {
+        stderrBytes += Buffer.byteLength(chunk);
+        if (stderrBytes <= 16384) stderr += String(chunk);
       });
       child.once("error", () => {
         clearTimeout(timer);
-        reject(new Error("Buzz executable failed"));
+        termination = "spawn_error";
+        resolve({ exitCode: null, stdout: "", diagnostic: diagnostic() });
       });
       child.once("close", (code) => {
         clearTimeout(timer);
-        if (overflow) reject(new Error("Buzz response exceeded limit"));
-        else resolve({ exitCode: code, stdout });
+        resolve({
+          exitCode: code,
+          stdout: overflow ? "" : stdout,
+          diagnostic: diagnostic(),
+        });
       });
       child.stdin.on("error", () => {});
       child.stdin.end(plan.stdin ?? "");
@@ -233,11 +311,26 @@ export class BuzzReceiptService {
     let status: "accepted" | "rejected" | "unknown" = "unknown";
     let eventId: string | null = null;
     let channelId: string | null = null;
+    let cliDiagnostic: Record<string, unknown> = {
+      termination: "runner_exception",
+    };
     try {
       const output = await runner(plan);
+      cliDiagnostic = {
+        ...(output.diagnostic ?? { termination: "exited" }),
+        exitCode: output.exitCode,
+        stdoutBytes:
+          output.diagnostic?.stdoutBytes ?? Buffer.byteLength(output.stdout),
+        stdoutJsonValid: false,
+      };
       const response: unknown = JSON.parse(output.stdout);
+      cliDiagnostic.stdoutJsonValid = true;
       if (response && typeof response === "object") {
         const value = response as Record<string, unknown>;
+        cliDiagnostic.acceptedField =
+          typeof value.accepted === "boolean" ? value.accepted : null;
+        cliDiagnostic.validEventIdPresent =
+          typeof value.event_id === "string" && hex64.test(value.event_id);
         if (value.accepted === false) status = "rejected";
         else if (
           output.exitCode === 0 &&
@@ -257,8 +350,14 @@ export class BuzzReceiptService {
       /* unknown external result: reconcile rather than retry */
     }
     const result = await this.db.query(
-      "UPDATE buzz_action_receipts SET status=$2,event_id=$3,channel_id=COALESCE($4,channel_id),updated_at=clock_timestamp() WHERE id=$1 RETURNING *",
-      [claim.receipt.id, status, eventId, channelId],
+      "UPDATE buzz_action_receipts SET status=$2,event_id=$3,channel_id=COALESCE($4,channel_id),cli_diagnostic=$5,updated_at=clock_timestamp() WHERE id=$1 RETURNING *",
+      [
+        claim.receipt.id,
+        status,
+        eventId,
+        channelId,
+        JSON.stringify(cliDiagnostic),
+      ],
     );
     return {
       ...result.rows[0],

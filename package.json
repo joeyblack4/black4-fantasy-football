@@ -25,7 +25,12 @@
     "publication:x": "tsx scripts/x-publisher.ts",
     "readiness": "tsx scripts/readiness.ts",
     "provider:guardrails": "tsx scripts/check-guardrails.ts",
-    "provider:reconcile": "tsx scripts/reconcile-billing.ts"
+    "provider:reconcile": "tsx scripts/reconcile-billing.ts",
+    "harness:inventory": "tsx scripts/harnesses.ts --inventory",
+    "harness:prepare": "tsx scripts/harnesses.ts --prepare",
+    "harness:mcp": "tsx scripts/harness-mcp.ts",
+    "harness:doctor": "tsx scripts/harness-doctor.ts",
+    "fleet:status": "node scripts/native-buzz.mjs status"
   },
   "keywords": [],
   "author": "",

@@ -1,11 +1,23 @@
+import {
+  assertNoConversationSession,
+  conversationLeagueClosedPredicate,
+} from "./conversation.js";
+import {
+  assertRehearsalClaim,
+  assertRehearsalReconciliation,
+  rehearsalClaimPredicate,
+  tagRehearsalWake,
+  tagRehearsalOutcomeWake,
+} from "./rehearsal.js";
+import { assertOwnerStageAction } from "./owner-stage.js";
 import { createHash, randomUUID } from "node:crypto";
 import { transaction, type Db, type Tx } from "../db.js";
-import {
-  LeagueService,
-  LeagueError,
-  type CommandReceipt,
-} from "../league/index.js";
+import { LeagueService, LeagueError } from "../league/index.js";
 import { RuntimeError, type Job, type RuntimeStore } from "./index.js";
+import { getFootballHost } from "../league/host.js";
+import { loadMflAdapter } from "../mfl/service.js";
+import { MflError, type MflReceipt } from "../mfl/contracts.js";
+import { MflDraftQueueService } from "../mfl/draft-queue.js";
 import {
   FootballActionSchema,
   type FootballAction,
@@ -36,6 +48,30 @@ export async function enqueueFootball(tx: Tx, job: Job, input: FootballAction) {
     )
   ).rows[0];
   assert(binding && binding.kind === "ai", "FOOTBALL_BINDING_REQUIRED");
+  await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1,7044))", [
+    binding.league_id,
+  ]);
+  await assertNoConversationSession(tx, binding.league_id);
+  const host = await getFootballHost(tx, binding.league_id);
+  assert(
+    (host.kind === "mfl") ===
+      (action.command.type === "mfl" ||
+        action.command.type === "mflLocalDraftQueue"),
+    "FOOTBALL_COMMAND_HOST_MISMATCH",
+  );
+  if (
+    action.command.type === "mfl" &&
+    action.command.action.type === "proposeTrade"
+  )
+    assert(
+      (
+        await tx.query(
+          "SELECT 1 FROM league_teams WHERE league_id=$1 AND id=$2",
+          [binding.league_id, action.command.action.counterpartyTeamId],
+        )
+      ).rowCount,
+      "FOOTBALL_PEER_SCOPE_FORBIDDEN",
+    );
   if (action.command.type === "proposeTrade")
     assert(
       (
@@ -74,7 +110,7 @@ export async function enqueueFootball(tx: Tx, job: Job, input: FootballAction) {
     );
 
   const fingerprint = createHash("sha256")
-    .update(canonical({ binding, command: action.command }))
+    .update(canonical({ binding, host, command: action.command }))
     .digest("hex");
   const existing = await tx.query(
     "SELECT 1 FROM runtime_football_outbox WHERE agent_id=$1 AND causal_id=$2",
@@ -84,7 +120,7 @@ export async function enqueueFootball(tx: Tx, job: Job, input: FootballAction) {
     assert(
       (
         await tx.query(
-          "SELECT count(*)::int AS n FROM runtime_football_outbox WHERE agent_id=$1 AND status IN ('pending','running')",
+          "SELECT count(*)::int AS n FROM runtime_football_outbox WHERE agent_id=$1 AND status IN ('pending','running','held')",
           [job.agentId],
         )
       ).rows[0].n < 100,
@@ -92,7 +128,7 @@ export async function enqueueFootball(tx: Tx, job: Job, input: FootballAction) {
     );
   const id = randomUUID();
   const inserted = await tx.query(
-    "INSERT INTO runtime_football_outbox(id,agent_id,job_id,causal_id,fingerprint,origin_fence,league_id,team_id,owner_id,command) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(agent_id,causal_id) DO NOTHING RETURNING *",
+    "INSERT INTO runtime_football_outbox(id,agent_id,job_id,causal_id,fingerprint,origin_fence,league_id,team_id,owner_id,command,host_kind,host_version,host_identity) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(agent_id,causal_id) DO NOTHING RETURNING *",
     [
       id,
       job.agentId,
@@ -104,6 +140,9 @@ export async function enqueueFootball(tx: Tx, job: Job, input: FootballAction) {
       binding.team_id,
       binding.owner_id,
       JSON.stringify(action.command),
+      host.kind,
+      host.version,
+      JSON.stringify(host.identity),
     ],
   );
   const row =
@@ -125,6 +164,8 @@ export async function enqueueFootball(tx: Tx, job: Job, input: FootballAction) {
           outboxId: row.id,
           commandType: action.command.type,
           causalId: action.causalId,
+          host: host.kind,
+          hostVersion: host.version,
         }),
       ],
     );
@@ -141,12 +182,37 @@ export type FootballClaim = {
   fence: number;
   worker_id: string;
   attempts: number;
+  host_kind: "custom" | "mfl";
+  host_version: number;
+  host_identity: Record<string, unknown>;
 };
+export type FootballReceipt = {
+  receiptId: string;
+  result: Record<string, unknown>;
+  replayed: boolean;
+  eventId?: string;
+  mfl?: MflReceipt;
+};
+function mflReceipt(receipt: MflReceipt): FootballReceipt {
+  return {
+    receiptId: receipt.id,
+    replayed: receipt.replayed ?? false,
+    result: {
+      host: "mfl",
+      state: receipt.state,
+      result: receipt.result ?? null,
+      reason: receipt.reason ?? null,
+      synthetic: receipt.synthetic,
+    },
+    mfl: receipt,
+  };
+}
 export class FootballOutbox {
   constructor(
     readonly db: Db,
     readonly runtime: RuntimeStore,
     readonly league = new LeagueService(db),
+    readonly mflLoader = loadMflAdapter,
   ) {}
   async claim(
     workerId: string,
@@ -170,17 +236,28 @@ export class FootballOutbox {
       "INVALID_OUTBOX_CLAIM",
     );
     return transaction(this.db, async (tx) => {
+      const candidate = (
+        await tx.query(
+          `SELECT o.id,o.league_id FROM runtime_football_outbox o JOIN runtime_jobs j ON j.id=o.job_id WHERE ($1::text[] IS NULL OR o.agent_id=ANY($1::text[])) AND ${conversationLeagueClosedPredicate("o.league_id")} AND ${rehearsalClaimPredicate("j")} AND o.status IN ('pending','running') AND o.next_attempt_at<=clock_timestamp() AND (o.status='pending' OR o.lease_until<=clock_timestamp()) ORDER BY o.next_attempt_at,o.id LIMIT 1`,
+          [allowedAgentIds ?? null],
+        )
+      ).rows[0];
+      if (!candidate) return null;
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,7044))",
+        [candidate.league_id],
+      );
       const row = (
         await tx.query(
-          "SELECT * FROM runtime_football_outbox WHERE ($1::text[] IS NULL OR agent_id=ANY($1::text[])) AND status IN ('pending','running') AND next_attempt_at<=clock_timestamp() AND (status='pending' OR lease_until<=clock_timestamp()) ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT 1",
-          [allowedAgentIds ?? null],
+          `SELECT o.* FROM runtime_football_outbox o JOIN runtime_jobs j ON j.id=o.job_id WHERE o.id=$1 AND o.league_id=$2 AND ($3::text[] IS NULL OR o.agent_id=ANY($3::text[])) AND ${conversationLeagueClosedPredicate("o.league_id")} AND ${rehearsalClaimPredicate("j")} AND o.status IN ('pending','running') AND o.next_attempt_at<=clock_timestamp() AND (o.status='pending' OR o.lease_until<=clock_timestamp()) FOR UPDATE OF o SKIP LOCKED`,
+          [candidate.id, candidate.league_id, allowedAgentIds ?? null],
         )
       ).rows[0];
       if (!row) return null;
       if (row.attempts >= 5) {
         await tx.query(
-          "UPDATE runtime_football_outbox SET status='dead',error='DISPATCH_ATTEMPTS_EXHAUSTED',lease_until=NULL WHERE id=$1",
-          [row.id],
+          "UPDATE runtime_football_outbox SET status=$2,error='DISPATCH_ATTEMPTS_EXHAUSTED',lease_until=NULL WHERE id=$1",
+          [row.id, row.command.type === "mfl" ? "held" : "dead"],
         );
         return null;
       }
@@ -209,10 +286,28 @@ export class FootballOutbox {
     );
     return row;
   }
-  /** An uncertain retry always executes this identical command key; the league stores its receipt. */
-  async execute(claim: FootballClaim): Promise<CommandReceipt> {
-    const context = await transaction(this.db, async (tx) => {
+  private async context(claim: FootballClaim, readOnlyReconciliation = false) {
+    return transaction(this.db, async (tx) => {
+      if (!readOnlyReconciliation)
+        await assertNoConversationSession(tx, claim.league_id);
       const row = await this.check(tx, claim);
+      const recovery = readOnlyReconciliation
+        ? await assertRehearsalReconciliation(tx, {
+            id: row.job_id,
+            agentId: row.agent_id,
+          })
+        : (await assertRehearsalClaim(tx, {
+            id: row.job_id,
+            agentId: row.agent_id,
+          }),
+          null);
+      const host = await getFootballHost(tx, row.league_id);
+      assert(
+        host.kind === row.host_kind &&
+          host.version === row.host_version &&
+          canonical(host.identity) === canonical(row.host_identity ?? {}),
+        "FOOTBALL_HOST_CHANGED",
+      );
       const binding = (
         await tx.query(
           "SELECT b.*,t.owner_id,t.kind,a.enabled,a.kind AS runtime_kind FROM runtime_bindings b JOIN league_teams t ON t.league_id=b.league_id AND t.id=b.team_id JOIN runtime_agents a ON a.id=b.agent_id WHERE b.agent_id=$1",
@@ -221,7 +316,7 @@ export class FootballOutbox {
       ).rows[0];
       assert(
         binding &&
-          binding.enabled &&
+          (binding.enabled || !!recovery) &&
           binding.kind === "ai" &&
           binding.runtime_kind === "ai" &&
           binding.league_id === row.league_id &&
@@ -229,12 +324,15 @@ export class FootballOutbox {
           binding.owner_id === row.owner_id,
         "FOOTBALL_AUTHORITY_CHANGED",
       );
+      if (!recovery)
+        await assertOwnerStageAction(tx, row.agent_id, "football", row.job_id);
       const parsed = FootballActionSchema.parse({
         type: "football",
         causalId: "dispatch",
         command: row.command,
       });
       return {
+        host,
         actor: {
           id: binding.owner_id,
           role: "owner" as const,
@@ -248,23 +346,101 @@ export class FootballOutbox {
         },
       };
     });
+  }
+  /** MFL's durable journal holds uncertain writes; replay never blindly repeats an external POST. */
+  async execute(claim: FootballClaim): Promise<FootballReceipt> {
+    const context = await this.context(claim);
+    if (context.command.type === "mflLocalDraftQueue") {
+      assert(context.host.kind === "mfl", "FOOTBALL_COMMAND_HOST_MISMATCH");
+      return new MflDraftQueueService(this.db).saveQueue(context.actor, {
+        leagueId: context.actor.leagueId,
+        idempotencyKey: context.command.idempotencyKey,
+        expectedVersion: context.command.expectedVersion,
+        playerIds: context.command.playerIds,
+      });
+    }
+    if (context.host.kind === "mfl") {
+      assert(context.command.type === "mfl", "FOOTBALL_COMMAND_HOST_MISMATCH");
+      const adapter = await this.mflLoader(this.db, context.actor.leagueId);
+      return mflReceipt(
+        await adapter.execute(
+          context.actor,
+          context.command.idempotencyKey,
+          context.command.action,
+        ),
+      );
+    }
+    assert(context.command.type !== "mfl", "FOOTBALL_COMMAND_HOST_MISMATCH");
     return this.league.execute(context.actor, context.command);
   }
-  async acknowledge(claim: FootballClaim, receipt: CommandReceipt) {
+  async acknowledge(
+    claim: FootballClaim,
+    receipt: FootballReceipt,
+    readOnlyReconciliation = false,
+  ) {
+    const context = await this.context(claim, readOnlyReconciliation);
+    const adapter =
+      context.host.kind === "mfl" && context.command.type === "mfl"
+        ? await this.mflLoader(this.db, context.actor.leagueId)
+        : null;
     return transaction(this.db, async (tx) => {
       const row = await this.check(tx, claim);
-      // Validate the receipt against authority storage. The dispatcher cannot invent success.
-      const persisted = (
-        await tx.query(
-          "SELECT response FROM league_command_receipts WHERE league_id=$1 AND actor_id=$2 AND idempotency_key=$3",
-          [row.league_id, row.owner_id, "runtime-football:" + row.id],
-        )
-      ).rows[0];
+      const host = await getFootballHost(tx, row.league_id);
       assert(
-        persisted?.response?.receiptId === receipt.receiptId,
-        "UNVERIFIED_FOOTBALL_RECEIPT",
+        host.kind === row.host_kind &&
+          host.version === row.host_version &&
+          canonical(host.identity) === canonical(row.host_identity ?? {}),
+        "FOOTBALL_HOST_CHANGED",
       );
-      const official: CommandReceipt = persisted.response;
+      // Validate the receipt against authority storage. The dispatcher cannot invent success.
+      let official: FootballReceipt;
+      if (row.command.type === "mflLocalDraftQueue") {
+        assert(
+          !receipt.mfl && host.kind === "mfl",
+          "UNVERIFIED_FOOTBALL_RECEIPT",
+        );
+        official = await new MflDraftQueueService(this.db).verifyReceipt(
+          tx,
+          context.actor,
+          {
+            leagueId: row.league_id,
+            idempotencyKey: "runtime-football:" + row.id,
+            expectedVersion: row.command.expectedVersion,
+            playerIds: row.command.playerIds,
+          },
+          receipt.receiptId,
+        );
+      } else if (adapter) {
+        assert(
+          receipt.mfl && row.command.type === "mfl",
+          "UNVERIFIED_FOOTBALL_RECEIPT",
+        );
+        const persisted = await adapter.verifyReceipt(
+          tx,
+          context.actor,
+          "runtime-football:" + row.id,
+          receipt.receiptId,
+        );
+        assert(
+          persisted?.state === "verified" &&
+            canonical(persisted.action) === canonical(row.command.action),
+          "UNVERIFIED_FOOTBALL_RECEIPT",
+        );
+        official = mflReceipt(persisted);
+      } else {
+        assert(!receipt.mfl, "UNVERIFIED_FOOTBALL_RECEIPT");
+        const persisted = (
+          await tx.query(
+            "SELECT response FROM league_command_receipts WHERE league_id=$1 AND actor_id=$2 AND idempotency_key=$3",
+            [row.league_id, row.owner_id, "runtime-football:" + row.id],
+          )
+        ).rows[0];
+        assert(
+          persisted?.response?.receiptId === receipt.receiptId,
+          "UNVERIFIED_FOOTBALL_RECEIPT",
+        );
+        official = persisted.response;
+      }
       await tx.query(
         "UPDATE runtime_football_outbox SET status='delivered',engine_receipt=$2,delivered_at=clock_timestamp(),lease_until=NULL WHERE id=$1",
         [row.id, JSON.stringify(official)],
@@ -279,11 +455,45 @@ export class FootballOutbox {
             receiptId: official.receiptId,
             commandType: row.command.type,
             replayed: receipt.replayed,
+            host: row.host_kind,
           }),
         ],
       );
+      if (readOnlyReconciliation) return official;
+      // The next changed draft turn supplies fresh state. Do not spend another
+      // model turn merely acknowledging its own successful trial pick/queue.
+      if (
+        row.command.type === "mflLocalDraftQueue" ||
+        (row.command.type === "mfl" && row.command.action.type === "draft")
+      ) {
+        const rehearsal = await assertRehearsalClaim(tx, {
+          id: row.job_id,
+          agentId: row.agent_id,
+        });
+        if (rehearsal) {
+          await tx.query(
+            "INSERT INTO runtime_receipts(type,agent_id,job_id,details) VALUES('rehearsal.football_success_coalesced',$1,$2,$3)",
+            [
+              row.agent_id,
+              row.job_id,
+              {
+                leagueId: row.league_id,
+                epoch: rehearsal.epoch,
+                hostVersion: row.host_version,
+                outboxId: row.id,
+                receiptId: official.receiptId,
+                commandType: row.command.type,
+                nextWakeSource: "draft-observer",
+                inferenceWakeCreated: false,
+              },
+            ],
+          );
+          return official;
+        }
+      }
       const participants = new Set<string>([row.agent_id]);
       for (const teamId of [
+        ...(official.mfl?.affectedTeamIds ?? []),
         official.result.fromTeamId,
         official.result.toTeamId,
       ])
@@ -296,8 +506,8 @@ export class FootballOutbox {
           ).rows[0];
           if (target) participants.add(target.agent_id);
         }
-      for (const agentId of [...participants].sort())
-        await this.runtime.ingestEventTx(tx, {
+      for (const agentId of [...participants].sort()) {
+        const wake = await this.runtime.ingestEventTx(tx, {
           agentId,
           causalId: "football-result:" + row.id,
           payload: {
@@ -309,10 +519,22 @@ export class FootballOutbox {
             result: official.result,
           },
         });
+        await tagRehearsalWake(tx, {
+          jobId: wake.id,
+          leagueId: row.league_id,
+          hostVersion: row.host_version,
+          source: "football-receipt",
+        });
+      }
       return official;
     });
   }
-  async fail(claim: FootballClaim, error: string, retryable: boolean) {
+  async fail(
+    claim: FootballClaim,
+    error: string,
+    retryable: boolean,
+    suppressWake = false,
+  ) {
     return transaction(this.db, async (tx) => {
       const row = await this.check(tx, claim);
       const retry = retryable && row.attempts < 5;
@@ -333,8 +555,8 @@ export class FootballOutbox {
           }),
         ],
       );
-      if (!retry)
-        await this.runtime.ingestEventTx(tx, {
+      if (!retry && !suppressWake) {
+        const wake = await this.runtime.ingestEventTx(tx, {
           agentId: row.agent_id,
           causalId: "football-failed:" + row.id,
           payload: {
@@ -344,17 +566,155 @@ export class FootballOutbox {
             error: error.slice(0, 1000),
           },
         });
+        await tagRehearsalOutcomeWake(tx, {
+          jobId: wake.id,
+          outboxId: row.id,
+          source: "football-failure",
+        });
+      }
     });
+  }
+  async hold(
+    claim: FootballClaim,
+    reason = "MFL_WRITE_REQUIRES_RECONCILIATION",
+    suppressWake = false,
+  ) {
+    return transaction(this.db, async (tx) => {
+      const row = await this.check(tx, claim);
+      await tx.query(
+        "UPDATE runtime_football_outbox SET status='held',error=$2,lease_until=NULL WHERE id=$1",
+        [row.id, reason],
+      );
+      await tx.query(
+        "INSERT INTO runtime_receipts(type,agent_id,job_id,details) VALUES('football.held',$1,$2,$3)",
+        [
+          row.agent_id,
+          row.job_id,
+          {
+            outboxId: row.id,
+            host: row.host_kind,
+            reason,
+            automaticRetry: false,
+          },
+        ],
+      );
+      if (!suppressWake) {
+        const wake = await this.runtime.ingestEventTx(tx, {
+          agentId: row.agent_id,
+          causalId: "football-held:" + row.id,
+          payload: {
+            kind: "football.held",
+            outboxId: row.id,
+            host: row.host_kind,
+            commandType:
+              row.command.type === "mfl"
+                ? row.command.action.type
+                : row.command.type,
+            requiresOperatorReconciliation: true,
+            automaticRetry: false,
+          },
+        });
+        await tagRehearsalOutcomeWake(tx, {
+          jobId: wake.id,
+          outboxId: row.id,
+          source: "football-held",
+        });
+      }
+    });
+  }
+  /** Explicit operator recovery only. Performs upstream reads, never execute()/POST. */
+  async reconcileHeld(
+    outboxId: string,
+    workerId: string,
+  ): Promise<"delivered" | "held" | "failed"> {
+    const claim = await transaction(this.db, async (tx) => {
+      const candidate = (
+        await tx.query(
+          "SELECT league_id FROM runtime_football_outbox WHERE id=$1",
+          [outboxId],
+        )
+      ).rows[0];
+      assert(candidate, "MFL_HELD_OUTBOX_REQUIRED");
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,7044))",
+        [candidate.league_id],
+      );
+      const row = (
+        await tx.query(
+          "SELECT * FROM runtime_football_outbox WHERE id=$1 FOR UPDATE",
+          [outboxId],
+        )
+      ).rows[0];
+      assert(
+        row?.status === "held" &&
+          row.host_kind === "mfl" &&
+          row.command.type === "mfl",
+        "MFL_HELD_OUTBOX_REQUIRED",
+      );
+      assert(
+        workerId.length > 0 && workerId.length <= 200,
+        "INVALID_OUTBOX_CLAIM",
+      );
+      return (
+        await tx.query(
+          "UPDATE runtime_football_outbox SET status='running',worker_id=$2,fence=fence+1,lease_until=clock_timestamp()+interval '5 minutes' WHERE id=$1 RETURNING *",
+          [outboxId, workerId],
+        )
+      ).rows[0] as FootballClaim;
+    });
+    try {
+      const context = await this.context(claim, true);
+      assert(context.host.kind === "mfl", "FOOTBALL_HOST_CHANGED");
+      const adapter = await this.mflLoader(this.db, context.actor.leagueId);
+      const receipt = await adapter.reconcile(
+        context.actor,
+        context.command.idempotencyKey,
+      );
+      if (receipt.state === "verified") {
+        await this.acknowledge(claim, mflReceipt(receipt), true);
+        return "delivered";
+      }
+      if (receipt.state === "rejected") {
+        await transaction(this.db, async (tx) => {
+          const row = await this.check(tx, claim);
+          const verified = await adapter.verifyReceipt(
+            tx,
+            context.actor,
+            context.command.idempotencyKey,
+            receipt.id,
+          );
+          assert(
+            verified?.state === "rejected" &&
+              row.command.type === "mfl" &&
+              canonical(verified.action) === canonical(row.command.action),
+            "UNVERIFIED_FOOTBALL_RECEIPT",
+          );
+        });
+        await this.fail(claim, "MFL_WRITE_REJECTED", false, true);
+        return "failed";
+      }
+      await this.hold(claim, undefined, true);
+      return "held";
+    } catch (error) {
+      await this.hold(
+        claim,
+        error instanceof RuntimeError
+          ? error.code
+          : "MFL_RECONCILIATION_UNCERTAIN",
+        true,
+      );
+      return "held";
+    }
   }
   async dispatchOne(
     workerId: string,
     options: {
       leaseMs?: number;
       allowedAgentIds?: string[];
-      afterExecute?: (receipt: CommandReceipt) => Promise<void>;
+      afterExecute?: (receipt: FootballReceipt) => Promise<void>;
     } = {},
   ): Promise<{
-    status: "idle" | "delivered" | "failed" | "stale";
+    status: "idle" | "delivered" | "failed" | "stale" | "held";
     outboxId?: string;
     error?: string;
   }> {
@@ -367,6 +727,18 @@ export class FootballOutbox {
     try {
       const receipt = await this.execute(claim);
       await options.afterExecute?.(receipt);
+      if (receipt.mfl && receipt.mfl.state !== "verified") {
+        if (receipt.mfl.state === "rejected") {
+          await this.fail(claim, "MFL_WRITE_REJECTED", false);
+          return {
+            status: "failed",
+            outboxId: claim.id,
+            error: "MFL_WRITE_REJECTED",
+          };
+        }
+        await this.hold(claim);
+        return { status: "held", outboxId: claim.id };
+      }
       await this.acknowledge(claim, receipt);
       return { status: "delivered", outboxId: claim.id };
     } catch (error) {
@@ -374,10 +746,27 @@ export class FootballOutbox {
       if (error instanceof RuntimeError && error.code === "STALE_OUTBOX_CLAIM")
         return { status: "stale", outboxId: claim.id, error: message };
       try {
+        if (claim.host_kind === "mfl" && claim.command.type === "mfl") {
+          await this.hold(
+            claim,
+            error instanceof RuntimeError
+              ? error.code
+              : "MFL_DISPATCH_UNCERTAIN",
+          );
+          return {
+            status: "held",
+            outboxId: claim.id,
+            error: "MFL_DISPATCH_UNCERTAIN",
+          };
+        }
         await this.fail(
           claim,
           message,
-          !(error instanceof LeagueError || error instanceof RuntimeError),
+          !(
+            error instanceof LeagueError ||
+            error instanceof RuntimeError ||
+            error instanceof MflError
+          ),
         );
       } catch (failure) {
         if (

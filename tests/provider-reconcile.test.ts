@@ -7,6 +7,7 @@ import {
 } from "../src/providers/manifests.js";
 import { RuntimeStore, type Job } from "../src/runtime/index.js";
 import { BillingReconciler } from "../src/providers/reconcile.js";
+import { providerErrorHeaders } from "../src/providers/error-headers.js";
 let f: Awaited<ReturnType<typeof testDb>>,
   registry: ManifestRegistry,
   runtime: RuntimeStore,
@@ -119,6 +120,57 @@ async function wallet() {
     )
   ).rows[0];
 }
+it("keeps a future error-header locator unpaid until independently verified generation metadata settles it", async () => {
+  const turn = await fixture([null]);
+  const header = providerErrorHeaders(
+    new Headers({
+      "x-generation-id": "gen-error-header123",
+      "x-request-id": "request-123",
+      "retry-after": "30",
+    }),
+    secret,
+  );
+  await registry.observe(turn.callIds[0], {
+    status: "http_429_cost_uncertain",
+    generationId: header.generationId,
+    requestId: header.requestId,
+  });
+  expect(
+    (
+      await f.db.query(
+        "SELECT generation_id,request_id,reported_model,reported_provider,cost_micros,reconciliation_status FROM provider_calls WHERE id=$1",
+        [turn.callIds[0]],
+      )
+    ).rows[0],
+  ).toEqual({
+    generation_id: "gen-error-header123",
+    request_id: "request-123",
+    reported_model: null,
+    reported_provider: null,
+    cost_micros: null,
+    reconciliation_status: "pending",
+  });
+  expect(await wallet()).toMatchObject({
+    spent_micros: "0",
+    reserved_micros: "100",
+  });
+  const incomplete = await execute(responder((id) => ({ id })));
+  expect(incomplete.calls[0].status).toBe("pending_metadata_incomplete");
+  expect(await wallet()).toMatchObject({
+    spent_micros: "0",
+    reserved_micros: "100",
+  });
+  const result = await execute(responder((id) => metadata(id)));
+  expect(result.reservations[0]).toEqual({
+    id: turn.reservationId,
+    status: "settled",
+    actualMicros: 20,
+  });
+  expect(await wallet()).toMatchObject({
+    spent_micros: "20",
+    reserved_micros: "0",
+  });
+});
 it("settles only after every exact job/fence call verifies, and replay never double charges", async () => {
   const turn = await fixture(["gen-a", "gen-b"]);
   const first = await execute(
@@ -299,4 +351,109 @@ it("keeps a reservation with no identifiable provider call unresolved", async ()
   expect(noNetwork).not.toHaveBeenCalled();
   expect(result.reservations[0].status).toBe("RECONCILE_CALLS_UNRESOLVED");
   expect((await wallet()).reserved_micros).toBe("100");
+});
+
+it.each([20, 80, 120])(
+  "preserves unresolved server-search aggregate charge and reservation when generation cost is %i",
+  async (generationCostMicros) => {
+    const turn = await fixture(["search-gen"]);
+    await registry.observe(turn.callIds[0], {
+      status: "server_search_billing_unresolved",
+      generationId: "search-gen",
+      costMicros: 80,
+    });
+    const fetchImpl = responder((id) =>
+      metadata(id, generationCostMicros / 1_000_000),
+    );
+    const first = await execute(fetchImpl);
+    await execute(fetchImpl);
+    expect(first.calls[0].status).toBe(
+      generationCostMicros === 80
+        ? "pending_aggregate_billing_review"
+        : "pending_aggregate_cost_discrepancy",
+    );
+    expect(first.reservations[0].status).toBe("RECONCILE_CALLS_UNRESOLVED");
+    const call = (
+      await f.db.query(
+        "SELECT status,cost_micros,reconciliation_status FROM provider_calls WHERE id=$1",
+        [turn.callIds[0]],
+      )
+    ).rows[0];
+    expect(call).toEqual({
+      status: "server_search_billing_unresolved",
+      cost_micros: "80",
+      reconciliation_status: "pending",
+    });
+    expect(await wallet()).toMatchObject({
+      spent_micros: "0",
+      reserved_micros: "100",
+    });
+    expect(
+      (
+        await f.db.query(
+          "SELECT count(*) FROM runtime_receipts WHERE type='billing.discrepancy'",
+        )
+      ).rows[0].count,
+    ).toBe("1");
+  },
+);
+it("holds missing aggregate cost instead of replacing it with generation cost", async () => {
+  const turn = await fixture(["search-gen"]);
+  await registry.observe(turn.callIds[0], {
+    status: "server_search_billing_unresolved",
+  });
+  const report = await execute(responder((id) => metadata(id)));
+  expect(report.calls[0].status).toBe("pending_aggregate_billing_review");
+  expect(
+    (
+      await f.db.query("SELECT cost_micros FROM provider_calls WHERE id=$1", [
+        turn.callIds[0],
+      ])
+    ).rows[0].cost_micros,
+  ).toBeNull();
+  expect((await wallet()).reserved_micros).toBe("100");
+});
+it("uses persistent aggregate diagnostics even when transient call status changed", async () => {
+  const turn = await fixture(["search-gen"]);
+  await registry.observe(turn.callIds[0], {
+    status: "response_received",
+    costMicros: 80,
+  });
+  await registry.diagnostic(turn.callIds[0], {
+    kind: "aggregate_billing",
+    aggregateCostMicros: 80,
+  });
+  const report = await execute(responder((id) => metadata(id)));
+  expect(report.calls[0].status).toBe("pending_aggregate_cost_discrepancy");
+  expect(
+    (
+      await f.db.query(
+        "SELECT cost_micros,reconciliation_status FROM provider_calls WHERE id=$1",
+        [turn.callIds[0]],
+      )
+    ).rows[0],
+  ).toEqual({ cost_micros: "80", reconciliation_status: "pending" });
+  expect((await wallet()).reserved_micros).toBe("100");
+});
+it("rechecks aggregate diagnostics in the atomic reservation settlement hook", async () => {
+  const turn = await fixture(["search-gen"]);
+  const original = RuntimeStore.prototype.reconcileReservation;
+  vi.spyOn(RuntimeStore.prototype, "reconcileReservation").mockImplementation(
+    async function (this: RuntimeStore, id, cost, evidence, verify) {
+      // Simulate aggregate evidence arriving after metadata verification but before settlement.
+      await registry.diagnostic(turn.callIds[0], {
+        kind: "server_search_billing",
+        aggregateCostMicros: 80,
+      });
+      return original.call(this, id, cost, evidence, verify);
+    },
+  );
+  const result = await execute(responder((id) => metadata(id)));
+  expect(result.reservations[0].status).toBe(
+    "RECONCILE_AGGREGATE_BILLING_UNRESOLVED",
+  );
+  expect(await wallet()).toMatchObject({
+    spent_micros: "0",
+    reserved_micros: "100",
+  });
 });

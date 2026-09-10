@@ -1,9 +1,17 @@
+import {
+  conversationFranchisePredicate,
+  assertConversationFranchise,
+} from "../runtime/conversation.js";
+import { assertOwnerStageAction } from "../runtime/owner-stage.js";
+import { assertOwnerStageIntroReplacement } from "../runtime/owner-stage-disposition.js";
+import { RuntimeError } from "../runtime/index.js";
 import { randomUUID } from "node:crypto";
 import { transaction, type Db, type Tx } from "../db.js";
 import type { Job, RuntimeStore } from "../runtime/index.js";
 import { GovernanceService } from "../governance/index.js";
 import { LeagueError } from "../league/schema.js";
 import { z } from "zod";
+import type { BuzzChannelService } from "../buzz/channel.js";
 import { FranchiseActionSchema, type FranchiseAction } from "./schema.js";
 import {
   FranchiseService,
@@ -29,6 +37,22 @@ export async function enqueueFranchise(
     )
   ).rows[0];
   guard(binding && binding.kind === "ai", "FRANCHISE_BINDING_REQUIRED");
+  if (action.type === "buzz_channel") {
+    const stage = (
+      await tx.query(
+        "SELECT id FROM runtime_owner_stages WHERE league_id=$1 AND status IN ('active','paused') ORDER BY configured_at DESC LIMIT 1",
+        [binding.league_id],
+      )
+    ).rows[0];
+    if (stage)
+      await assertOwnerStageIntroReplacement(tx, {
+        leagueId: binding.league_id,
+        stageId: stage.id,
+        agentId: job.agentId,
+        action,
+      });
+  }
+  await assertConversationFranchise(tx, job.id, job.agentId, action);
   const hash = fingerprint({
     leagueId: binding.league_id,
     teamId: binding.team_id,
@@ -48,7 +72,7 @@ export async function enqueueFranchise(
   guard(
     (
       await tx.query(
-        "SELECT count(*)::int AS n FROM runtime_franchise_outbox WHERE agent_id=$1 AND status IN ('pending','running')",
+        "SELECT count(*)::int AS n FROM runtime_franchise_outbox WHERE agent_id=$1 AND status IN ('pending','running','held')",
         [job.agentId],
       )
     ).rows[0].n < 100,
@@ -99,6 +123,7 @@ export class FranchiseOutbox {
     readonly runtime: RuntimeStore,
     readonly service = new FranchiseService(db),
     readonly governance = new GovernanceService(db),
+    readonly buzzChannel?: BuzzChannelService,
   ) {}
   async claim(
     workerId: string,
@@ -122,19 +147,45 @@ export class FranchiseOutbox {
       "INVALID_SCOPE",
     );
     return transaction(this.db, async (tx) => {
+      const candidate = (
+        await tx.query(
+          `SELECT o.id,o.league_id FROM runtime_franchise_outbox o WHERE ($1::text[] IS NULL OR o.agent_id=ANY($1::text[])) AND ${conversationFranchisePredicate("o")} AND o.status IN ('pending','running') AND o.next_attempt_at<=clock_timestamp() AND (o.status='pending' OR o.lease_until<=clock_timestamp()) ORDER BY o.next_attempt_at,o.id LIMIT 1`,
+          [allowedAgentIds ?? null],
+        )
+      ).rows[0];
+      if (!candidate) return null;
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,7044))",
+        [candidate.league_id],
+      );
       const row = (
         await tx.query(
-          "SELECT * FROM runtime_franchise_outbox WHERE ($1::text[] IS NULL OR agent_id=ANY($1::text[])) AND status IN ('pending','running') AND next_attempt_at<=clock_timestamp() AND (status='pending' OR lease_until<=clock_timestamp()) ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT 1",
-          [allowedAgentIds ?? null],
+          `SELECT o.* FROM runtime_franchise_outbox o WHERE o.id=$1 AND ${conversationFranchisePredicate("o")} AND o.status IN ('pending','running') AND o.next_attempt_at<=clock_timestamp() AND (o.status='pending' OR o.lease_until<=clock_timestamp()) FOR UPDATE SKIP LOCKED`,
+          [candidate.id],
         )
       ).rows[0];
       if (!row) return null;
       if (row.attempts >= 5) {
         await tx.query(
-          "UPDATE runtime_franchise_outbox SET status='dead',error='DISPATCH_ATTEMPTS_EXHAUSTED',lease_until=NULL WHERE id=$1",
-          [row.id],
+          "UPDATE runtime_franchise_outbox SET status=$2,error='DISPATCH_ATTEMPTS_EXHAUSTED',lease_until=NULL WHERE id=$1",
+          [row.id, row.action.type === "buzz_channel" ? "held" : "dead"],
         );
-        await this.failedWake(tx, row, "DISPATCH_ATTEMPTS_EXHAUSTED");
+        if (row.action.type !== "buzz_channel")
+          await this.failedWake(tx, row, "DISPATCH_ATTEMPTS_EXHAUSTED");
+        else
+          await tx.query(
+            "INSERT INTO runtime_receipts(type,agent_id,job_id,details) VALUES('franchise.held',$1,$2,$3)",
+            [
+              row.agent_id,
+              row.job_id,
+              {
+                outboxId: row.id,
+                actionType: "buzz_channel",
+                automaticRetry: false,
+                reason: "DISPATCH_ATTEMPTS_EXHAUSTED",
+              },
+            ],
+          );
         return null;
       }
       return (
@@ -164,7 +215,17 @@ export class FranchiseOutbox {
   }
   async execute(claim: FranchiseClaim): Promise<FranchiseReceipt> {
     const context = await transaction(this.db, async (tx) => {
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,7044))",
+        [claim.league_id],
+      );
       const row = await this.check(tx, claim);
+      const conversationAuthority = await assertConversationFranchise(
+        tx,
+        row.job_id,
+        row.agent_id,
+        row.action,
+      );
       const binding = (
         await tx.query(
           "SELECT b.*,t.owner_id,t.kind,a.enabled,a.kind AS runtime_kind FROM runtime_bindings b JOIN league_teams t ON t.league_id=b.league_id AND t.id=b.team_id JOIN runtime_agents a ON a.id=b.agent_id WHERE b.agent_id=$1",
@@ -173,7 +234,7 @@ export class FranchiseOutbox {
       ).rows[0];
       guard(
         binding &&
-          binding.enabled &&
+          (binding.enabled || conversationAuthority) &&
           binding.kind === "ai" &&
           binding.runtime_kind === "ai" &&
           binding.league_id === row.league_id &&
@@ -181,6 +242,27 @@ export class FranchiseOutbox {
           binding.owner_id === row.owner_id,
         "FRANCHISE_AUTHORITY_CHANGED",
       );
+      await assertOwnerStageAction(
+        tx,
+        row.agent_id,
+        row.action.type,
+        row.job_id,
+      );
+      if (row.action.type === "buzz_channel") {
+        const stage = (
+          await tx.query(
+            "SELECT id FROM runtime_owner_stages WHERE league_id=$1 AND status IN ('active','paused') ORDER BY configured_at DESC LIMIT 1",
+            [row.league_id],
+          )
+        ).rows[0];
+        if (stage)
+          await assertOwnerStageIntroReplacement(tx, {
+            leagueId: row.league_id,
+            stageId: stage.id,
+            agentId: row.agent_id,
+            action: row.action,
+          });
+      }
       return {
         actor: {
           id: binding.owner_id,
@@ -199,6 +281,22 @@ export class FranchiseOutbox {
         leagueId: context.actor.leagueId,
         idempotencyKey: context.key,
       });
+    if (context.action.type === "buzz_channel") {
+      guard(this.buzzChannel, "BUZZ_CHANNEL_NOT_CONFIGURED");
+      const response = await this.buzzChannel.send(context.actor, {
+        leagueId: context.actor.leagueId,
+        channelId: context.action.channelId,
+        content: context.action.content,
+        mentionAgentIds: context.action.mentionAgentIds,
+        replyTo: context.action.replyTo,
+        operationKey: context.key,
+      });
+      return {
+        receiptId: response.receiptId,
+        replayed: response.replayed,
+        result: response,
+      };
+    }
     return this.service.execute(context.actor, {
       agentId: context.agentId,
       idempotencyKey: context.key,
@@ -209,7 +307,33 @@ export class FranchiseOutbox {
     return transaction(this.db, async (tx) => {
       const row = await this.check(tx, claim);
       let official: FranchiseReceipt;
-      if (row.action.type === "governance") {
+      if (row.action.type === "buzz_channel") {
+        guard(this.buzzChannel, "BUZZ_CHANNEL_NOT_CONFIGURED");
+        const response = await this.buzzChannel.verifyReceipt(
+          tx,
+          {
+            id: row.owner_id,
+            role: "owner",
+            leagueId: row.league_id,
+            teamId: row.team_id,
+          },
+          {
+            leagueId: row.league_id,
+            channelId: row.action.channelId,
+            content: row.action.content,
+            mentionAgentIds: row.action.mentionAgentIds,
+            replyTo: row.action.replyTo,
+            operationKey: "runtime-franchise:" + row.id,
+          },
+          receipt.receiptId,
+        );
+        guard(response.status === "accepted", "UNVERIFIED_FRANCHISE_RECEIPT");
+        official = {
+          receiptId: response.receiptId,
+          replayed: receipt.replayed,
+          result: response,
+        };
+      } else if (row.action.type === "governance") {
         const stored = (
           await tx.query(
             "SELECT response FROM governance_receipts WHERE league_id=$1 AND actor_id=$2 AND idempotency_key=$3",
@@ -252,6 +376,26 @@ export class FranchiseOutbox {
           }),
         ],
       );
+      if (
+        (
+          await tx.query(
+            "SELECT 1 FROM runtime_owner_stages WHERE league_id=$1 AND status='active'",
+            [row.league_id],
+          )
+        ).rowCount
+      )
+        return official; // Stage readiness reads durable outcomes without reply storms.
+      if (row.action.type === "buzz_channel") return official; // Only canonical Buzz polling delivers native messages.
+      if (
+        row.action.type === "governance" &&
+        (
+          await tx.query(
+            "SELECT 1 FROM runtime_conventions WHERE league_id=$1 AND status='active'",
+            [row.league_id],
+          )
+        ).rowCount
+      )
+        return official;
       let targets = [row.agent_id];
       if (
         row.action.type === "governance" &&
@@ -318,7 +462,7 @@ export class FranchiseOutbox {
       afterExecute?: (receipt: FranchiseReceipt) => Promise<void>;
     } = {},
   ): Promise<{
-    status: "idle" | "delivered" | "failed" | "stale";
+    status: "idle" | "delivered" | "failed" | "stale" | "held";
     outboxId?: string;
     error?: string;
   }> {
@@ -331,6 +475,17 @@ export class FranchiseOutbox {
     try {
       const receipt = await this.execute(claim);
       await options.afterExecute?.(receipt);
+      if (
+        claim.action.type === "buzz_channel" &&
+        receipt.result.status !== "accepted"
+      ) {
+        if (receipt.result.status === "rejected") {
+          await this.fail(claim, "BUZZ_CHANNEL_SEND_REJECTED", false);
+          return { status: "failed", outboxId: claim.id };
+        }
+        await this.holdChannel(claim);
+        return { status: "held", outboxId: claim.id };
+      }
       await this.acknowledge(claim, receipt);
       return { status: "delivered", outboxId: claim.id };
     } catch (error) {
@@ -341,6 +496,35 @@ export class FranchiseOutbox {
       )
         return { status: "stale", outboxId: claim.id, error: message };
       try {
+        if (
+          error instanceof RuntimeError &&
+          error.code.startsWith("OWNER_STAGE_")
+        ) {
+          await transaction(this.db, async (tx) => {
+            const row = await this.check(tx, claim);
+            await tx.query(
+              "UPDATE runtime_franchise_outbox SET status='held',error=$2,lease_until=NULL WHERE id=$1",
+              [row.id, error.code],
+            );
+            await tx.query(
+              "INSERT INTO runtime_receipts(type,agent_id,job_id,details) VALUES('franchise.held',$1,$2,$3)",
+              [
+                row.agent_id,
+                row.job_id,
+                { outboxId: row.id, reason: error.code, automaticRetry: false },
+              ],
+            );
+          });
+          return { status: "held", outboxId: claim.id, error: error.code };
+        }
+        if (claim.action.type === "buzz_channel") {
+          await this.holdChannel(claim);
+          return {
+            status: "held",
+            outboxId: claim.id,
+            error: "BUZZ_CHANNEL_SEND_UNCERTAIN",
+          };
+        }
         await this.fail(
           claim,
           message,
@@ -360,5 +544,26 @@ export class FranchiseOutbox {
       }
       return { status: "failed", outboxId: claim.id, error: message };
     }
+  }
+  private async holdChannel(claim: FranchiseClaim) {
+    return transaction(this.db, async (tx) => {
+      const row = await this.check(tx, claim);
+      await tx.query(
+        "UPDATE runtime_franchise_outbox SET status='held',error='BUZZ_CHANNEL_SEND_REQUIRES_RECONCILIATION',lease_until=NULL WHERE id=$1",
+        [row.id],
+      );
+      await tx.query(
+        "INSERT INTO runtime_receipts(type,agent_id,job_id,details) VALUES('franchise.held',$1,$2,$3)",
+        [
+          row.agent_id,
+          row.job_id,
+          {
+            outboxId: row.id,
+            actionType: "buzz_channel",
+            automaticRetry: false,
+          },
+        ],
+      );
+    });
   }
 }

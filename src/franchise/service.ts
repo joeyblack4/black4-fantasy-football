@@ -79,6 +79,7 @@ export class FranchiseService {
   ): Promise<FranchiseReceipt> {
     const action = FranchiseActionSchema.parse(input.action);
     guard(action.type !== "governance", "GOVERNANCE_ADAPTER_REQUIRED");
+    guard(action.type !== "buzz_channel", "BUZZ_CHANNEL_ADAPTER_REQUIRED");
     guard(
       input.idempotencyKey.length > 0 && input.idempotencyKey.length <= 200,
       "INVALID_IDEMPOTENCY_KEY",

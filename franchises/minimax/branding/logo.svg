@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" role="img" aria-label="House of Mavis franchise crest">
+  <title>House of Mavis</title>
+  <desc>Indigo shield with a serif M monogram, dashed coral inner ring, and an EST 2026 strap.</desc>
+
+  <defs>
+    <radialGradient id="bgGlow" cx="50%" cy="46%" r="58%">
+      <stop offset="0%" stop-color="#252774"/>
+      <stop offset="65%" stop-color="#1A1B4B"/>
+      <stop offset="100%" stop-color="#0E0F2C"/>
+    </radialGradient>
+    <linearGradient id="strapGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FF7474"/>
+      <stop offset="100%" stop-color="#FF5C5C"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Bone-white field plate (provides contrast when embedded in dark UIs) -->
+  <rect x="0" y="0" width="600" height="600" fill="#F5F1E8"/>
+  <rect x="14" y="14" width="572" height="572" fill="none" stroke="#1A1B4B" stroke-width="2" opacity="0.18"/>
+
+  <!-- Shield -->
+  <path d="M300 70
+           C 200 70 130 90 100 110
+           L 100 320
+           C 100 410 190 470 300 530
+           C 410 470 500 410 500 320
+           L 500 110
+           C 470 90 400 70 300 70 Z"
+        fill="url(#bgGlow)" stroke="#0B0C24" stroke-width="3"/>
+
+  <!-- Dashed coral inner ring (echoes a football field arc) -->
+  <path d="M300 110
+           C 220 110 165 125 140 145
+           L 140 318
+           C 140 392 215 444 300 494
+           C 385 444 460 392 460 318
+           L 460 145
+           C 435 125 380 110 300 110 Z"
+        fill="none" stroke="#FF5C5C" stroke-width="3"
+        stroke-dasharray="9 7" stroke-linecap="round" opacity="0.85"/>
+
+  <!-- Top arch: HOUSE OF Mavis -->
+  <defs>
+    <path id="archTop" d="M120 320 A180 180 0 0 1 480 320" />
+  </defs>
+  <text font-family="Georgia, 'Times New Roman', serif" font-size="34"
+        font-weight="700" letter-spacing="6" fill="#F5F1E8">
+    <textPath href="#archTop" startOffset="50%" text-anchor="middle">HOUSE OF Mavis</textPath>
+  </text>
+
+  <!-- Center monogram M -->
+  <g transform="translate(300 320)">
+    <!-- Twin pillars -->
+    <path d="M -78 -68 L -78 68 L -52 68 L -52 -22 L 0 70 L 52 -22 L 52 68 L 78 68 L 78 -68 L 50 -68 L 0 30 L -50 -68 Z"
+          fill="#F5F1E8"/>
+    <!-- Coral underline tick -->
+    <rect x="-46" y="78" width="92" height="6" fill="#FF5C5C"/>
+  </g>
+
+  <!-- Bottom strap: EST 2026 -->
+  <g transform="translate(300 470)">
+    <path d="M -120 -22 L 120 -22 L 132 0 L 120 22 L -120 22 L -132 0 Z"
+          fill="url(#strapGrad)" stroke="#0B0C24" stroke-width="2"/>
+    <text x="0" y="6" text-anchor="middle"
+          font-family="Georgia, 'Times New Roman', serif"
+          font-size="22" font-weight="700" letter-spacing="5" fill="#0B0C24">EST · 2026</text>
+  </g>
+
+  <!-- Side stars -->
+  <g fill="#FF5C5C">
+    <polygon points="105,300 113,316 130,318 117,330 121,348 105,339 89,348 93,330 80,318 97,316"/>
+    <polygon points="495,300 503,316 520,318 507,330 511,348 495,339 479,348 483,330 470,318 487,316"/>
+  </g>
+
+  <!-- Tagline strip below the strap -->
+  <text x="300" y="540" text-anchor="middle"
+        font-family="Georgia, 'Times New Roman', serif"
+        font-size="16" font-style="italic" letter-spacing="3" fill="#1A1B4B">
+    minimum input · maximum output
+  </text>
+</svg>

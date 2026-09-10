@@ -40,6 +40,7 @@ type Call = {
   requested_model: string;
   requested_provider: string;
   reconciliation_status: string;
+  status: string;
   cost_micros: string | null;
   prompt_tokens: string | null;
   completion_tokens: string | null;
@@ -94,6 +95,29 @@ export class BillingReconciler {
       `INSERT INTO runtime_receipts(type,agent_id,job_id,details) SELECT 'billing.discrepancy',$1,$2,$3 WHERE NOT EXISTS (SELECT 1 FROM runtime_receipts WHERE type='billing.discrepancy' AND agent_id=$1 AND details=$3::jsonb)`,
       [agentId, jobId, details],
     );
+  }
+  private async aggregateBillingEvidence(tx: Pick<Tx, "query">, call: Call) {
+    // An internal server-tool loop can be billed as an aggregate while /generation
+    // describes one generation. Metadata alone cannot establish the aggregate basis.
+    const diagnostics = (
+      await tx.query<{ details: Record<string, unknown> }>(
+        `SELECT details FROM runtime_receipts WHERE type='provider_diagnostic'
+         AND agent_id=$1 AND details->>'callId'=$2
+         AND details->>'kind' IN ('server_search_billing','server_search_billing_unresolved','aggregate_billing')`,
+        [call.agent_id, call.id],
+      )
+    ).rows;
+    const unresolved =
+      call.status === "server_search_billing_unresolved" ||
+      diagnostics.length > 0;
+    const amounts = [
+      call.cost_micros === null ? null : Number(call.cost_micros),
+      ...diagnostics.map((r) => r.details.aggregateCostMicros),
+    ].filter(
+      (v): v is number =>
+        typeof v === "number" && Number.isSafeInteger(v) && v >= 0,
+    );
+    return { unresolved, observedAggregateCostsMicros: [...new Set(amounts)] };
   }
   async reconcile(
     actor: Principal,
@@ -203,7 +227,9 @@ export class BillingReconciler {
           current.requested_model !== m.document.model ||
           current.requested_provider !== m.document.providerSlug ||
           current.generation_id !== metadata.id ||
-          metadata.model !== m.document.model ||
+          ![m.document.model, m.document.canonicalModel]
+            .filter(Boolean)
+            .includes(metadata.model) ||
           !m.document.reportedProviderNames.includes(metadata.provider_name) ||
           duplicate.rowCount
         ) {
@@ -222,6 +248,28 @@ export class BillingReconciler {
             observedCostMicros: cost,
           });
           return "mismatch";
+        }
+        const aggregate = await this.aggregateBillingEvidence(tx, current);
+        if (aggregate.unresolved) {
+          const differs = aggregate.observedAggregateCostsMicros.some(
+            (amount) => amount !== cost,
+          );
+          await this.alert(tx, current.agent_id, current.job_id, {
+            callId: current.id,
+            reason: differs
+              ? "server_search_aggregate_cost_difference"
+              : "server_search_aggregate_basis_unresolved",
+            observedAggregateCostsMicros:
+              aggregate.observedAggregateCostsMicros,
+            observedGenerationCostMicros: cost,
+            adjustmentApplied: false,
+            reservationReleased: false,
+          });
+          // Preserve the original call status, response cost and pending reconciliation.
+          // Even an equal metadata figure cannot clear an explicitly unresolved basis.
+          return differs
+            ? "pending_aggregate_cost_discrepancy"
+            : "pending_aggregate_billing_review";
         }
         // observe only uses query; retain its update inside this agent/call transaction.
         await new ManifestRegistry(tx as unknown as Db).observe(call.id, {
@@ -275,7 +323,9 @@ export class BillingReconciler {
               c.reconciliation_status !== "verified" ||
               c.requested_model !== m.document.model ||
               c.requested_provider !== m.document.providerSlug ||
-              c.reported_model !== m.document.model ||
+              ![m.document.model, m.document.canonicalModel]
+                .filter(Boolean)
+                .includes(c.reported_model ?? "") ||
               !m.document.reportedProviderNames.includes(
                 c.reported_provider ?? "",
               ) ||
@@ -286,6 +336,11 @@ export class BillingReconciler {
           )
         )
           fail("RECONCILE_CALLS_UNRESOLVED");
+        // Also fence settlement if an aggregate diagnostic was added after the call
+        // became verified (including older reconcilers that overwrote its status).
+        for (const call of calls)
+          if ((await this.aggregateBillingEvidence(tx, call)).unresolved)
+            fail("RECONCILE_AGGREGATE_BILLING_UNRESOLVED");
         if (new Set(calls.map((c) => c.generation_id)).size !== calls.length)
           fail("RECONCILE_DUPLICATE_GENERATION");
         const duplicate = await tx.query(

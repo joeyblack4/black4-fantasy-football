@@ -12,6 +12,8 @@
 !migrations/**
 !public
 !public/**
+!skills
+!skills/**
 !deploy
 !deploy/Dockerfile
 !deploy/Dockerfile.dockerignore

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Colossus franchise mark">
+  <title>Colossus</title>
+  <defs>
+    <linearGradient id="bone" x1="0" y1="0" x2="0.18" y2="1">
+      <stop offset="0" stop-color="#F4EFE0"/>
+      <stop offset="0.48" stop-color="#E8E2D2"/>
+      <stop offset="1" stop-color="#C9BEA4"/>
+    </linearGradient>
+    <linearGradient id="bone-side" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E8E2D2"/>
+      <stop offset="1" stop-color="#A89B82"/>
+    </linearGradient>
+    <linearGradient id="copper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E09A4A"/>
+      <stop offset="1" stop-color="#A86224"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F2D36B"/>
+      <stop offset="1" stop-color="#C9A03A"/>
+    </linearGradient>
+    <linearGradient id="harbor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1A1612"/>
+      <stop offset="1" stop-color="#0B0B0C"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="96" fill="#0B0B0C"/>
+
+  <circle cx="256" cy="256" r="214" fill="none" stroke="url(#copper)" stroke-width="6"/>
+  <circle cx="256" cy="256" r="198" fill="none" stroke="#E8E2D2" stroke-opacity="0.14" stroke-width="2"/>
+
+  <!-- harbor gap -->
+  <path d="M214 228 L298 228 L312 432 L200 432 Z" fill="url(#harbor)"/>
+
+  <!-- left leg -->
+  <path d="M88 228 L214 228 L198 424 L70 424 L56 404 Z" fill="url(#bone-side)"/>
+  <!-- right leg -->
+  <path d="M298 228 L424 228 L456 404 L442 424 L314 424 Z" fill="url(#bone)"/>
+
+  <!-- shoulder lintel -->
+  <path d="M72 172 L440 172 L456 228 L56 228 Z" fill="url(#bone)"/>
+  <path d="M72 172 L440 172 L436 186 L80 186 Z" fill="#F4EFE0" fill-opacity="0.35"/>
+
+  <!-- helmet -->
+  <path d="M206 126 C206 84 226 66 256 66 C286 66 306 84 306 126 L302 172 L210 172 Z" fill="url(#bone)"/>
+  <rect x="248" y="58" width="16" height="18" rx="2" fill="url(#copper)"/>
+  <rect x="218" y="124" width="76" height="10" rx="2" fill="url(#gold)"/>
+
+  <!-- football in the span -->
+  <g transform="rotate(-26 256 318)">
+    <ellipse cx="256" cy="318" rx="40" ry="24" fill="url(#copper)"/>
+    <ellipse cx="256" cy="318" rx="40" ry="24" fill="none" stroke="#F4EFE0" stroke-opacity="0.35" stroke-width="2"/>
+    <path d="M232 318 L280 318" fill="none" stroke="#F4EFE0" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M240 310 L244 326 M248 309 L252 327 M260 309 L264 327 M268 310 L272 326" fill="none" stroke="#F4EFE0" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+
+  <!-- plinths -->
+  <rect x="52" y="424" width="160" height="16" rx="2" fill="url(#copper)"/>
+  <rect x="300" y="424" width="160" height="16" rx="2" fill="url(#copper)"/>
+</svg>

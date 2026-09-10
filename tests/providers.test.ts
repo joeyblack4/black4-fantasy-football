@@ -288,6 +288,7 @@ it("rejects an unapproved response provider even when generation metadata names 
     }),
     begin: async () => "fixture-call",
     observe: async () => {},
+    diagnostic: async () => {},
   };
   const x = driver(response, {
     identity: { manifestId: "fixture-manifest", registry, canary: true },
@@ -326,6 +327,7 @@ it("does not replace a known response charge with metadata from another generati
     }),
     begin: async () => "fixture-call",
     observe: async () => {},
+    diagnostic: async () => {},
   };
   const x = driver(response, {
     identity: { manifestId: "fixture-manifest", registry, canary: true },
@@ -364,6 +366,7 @@ it("keeps connectivity canaries separate from owner instructions and rejects act
     }),
     begin: async () => "fixture-call",
     observe: async () => {},
+    diagnostic: async () => {},
   };
   const requests: any[] = [];
   let actions: any[] = [];
@@ -415,4 +418,242 @@ it("keeps connectivity canaries separate from owner instructions and rejects act
     message: "PROVIDER_CANARY_ACTION_FORBIDDEN",
     costMicros: 123,
   });
+});
+
+it("uses a common JSON protocol while enforcing the complete action contract locally", async () => {
+  const x = driver(response);
+  await x.driver.run(job);
+  expect(x.requests[0].response_format).toEqual({ type: "json_object" });
+  expect(x.requests[0].messages[0].content).toContain(
+    "Return a JSON object conforming",
+  );
+  await expect(
+    driver({
+      ...response,
+      choices: [
+        {
+          finish_reason: "stop",
+          message: {
+            content: JSON.stringify({
+              actions: [
+                {
+                  type: "message",
+                  causalId: "x",
+                  recipientId: "b",
+                  body: "x",
+                  actor: "commissioner",
+                },
+              ],
+              summary: "x",
+            }),
+          },
+        },
+      ],
+    }).driver.run(job),
+  ).rejects.toThrow("PROVIDER_OUTPUT_INVALID");
+});
+
+it("keeps bounded redacted error evidence and never infers zero cost or retries an HTTP rejection", async () => {
+  const diagnostics: any[] = [];
+  let requests = 0;
+  const x = driver(response, {
+    diagnostic: async (d: any) => {
+      diagnostics.push(d);
+    },
+    fetchImpl: async () => {
+      requests++;
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: "Invalid synthetic-secret parameter",
+            metadata: {
+              error_type: "invalid_request",
+              secret: "do not retain",
+            },
+          },
+        }),
+        { status: 400 },
+      );
+    },
+  });
+  await expect(x.driver.run(job)).rejects.toThrow("HTTP_400_COST_UNCERTAIN");
+  expect(requests).toBe(1);
+  expect(diagnostics[0]).toMatchObject({
+    httpStatus: 400,
+    costKnown: false,
+    message: "Invalid [REDACTED] parameter",
+  });
+  expect(JSON.stringify(diagnostics)).not.toContain("synthetic-secret");
+  expect(JSON.stringify(diagnostics)).not.toContain("do not retain");
+});
+
+it("accepts only the manifest's explicit dated canonical model in generation metadata", async () => {
+  let canonical = "provider/model-20260907";
+  const observations: any[] = [];
+  const registry = {
+    preflight: async () => ({
+      document: {
+        model: "provider/model",
+        providerSlug: "synthetic-provider",
+        reportedProviderNames: ["Synthetic Provider"],
+        quantization: null,
+        canonicalModel: "provider/model-20260907",
+        toolPermissions: ["message"],
+      },
+    }),
+    begin: async () => "call",
+    diagnostic: async () => {},
+    observe: async (_id: string, value: any) => {
+      observations.push(value);
+    },
+  };
+  const x = driver(response, {
+    identity: { registry, manifestId: "test" },
+    fetchImpl: async (url: string) =>
+      new Response(
+        JSON.stringify(
+          url.includes("/generation?")
+            ? {
+                data: {
+                  id: response.id,
+                  model: canonical,
+                  provider_name: response.provider,
+                  total_cost: 0.000123,
+                },
+              }
+            : response,
+        ),
+      ),
+  });
+  await expect(x.driver.run(job)).resolves.toMatchObject({ costMicros: 123 });
+  expect(
+    observations.some((x) => x.status === "verified" && x.model === canonical),
+  ).toBe(true);
+  canonical = "provider/model-20260908";
+  await expect(x.driver.run(job)).rejects.toThrow(
+    "PROVIDER_RETURNED_DIFFERENT_MODEL",
+  );
+});
+
+it("retains bounded HTTP-200 error diagnostics without provider prose, prompts, or secrets and never retries", async () => {
+  const diagnostics: any[] = [],
+    observations: any[] = [];
+  const x = driver(
+    {
+      error: {
+        code: 503,
+        message:
+          "Provider returned error: synthetic-secret Bearer private-credential user prompt: MY_PRIVATE_PROMPT",
+        metadata: {
+          raw: JSON.stringify({
+            error: {
+              type: "provider_unavailable",
+              message: "PRIVATE_PROVIDER_CONTENT",
+            },
+          }),
+        },
+      },
+      model: "provider/model",
+      usage: { prompt_tokens: 12, MY_PRIVATE_PROMPT: "private" },
+      choices: [
+        { finish_reason: "error", message: { content: "PRIVATE_COMPLETION" } },
+      ],
+    },
+    {
+      diagnostic: async (d: any) => diagnostics.push(d),
+      observe: async (d: any) => observations.push(d),
+      repairInvalidResponses: true,
+    },
+  );
+  await expect(x.driver.run(job)).rejects.toThrow("PROVIDER_COST_UNKNOWN");
+  expect(x.requests).toHaveLength(1);
+  expect(diagnostics).toHaveLength(1);
+  expect(diagnostics[0]).toMatchObject({
+    kind: "provider_response_cost_unknown",
+    httpStatus: 200,
+    errorCode: 503,
+    message: "Provider returned error",
+    errorType: "provider_unavailable",
+    finishReason: "error",
+    observedModel: "provider/model",
+    observedGenerationId: null,
+    usageKeys: ["prompt_tokens"],
+    unrecognizedUsageKeyCount: 1,
+    costKnown: false,
+  });
+  const saved = JSON.stringify(diagnostics);
+  for (const secret of [
+    "synthetic-secret",
+    "private-credential",
+    "MY_PRIVATE_PROMPT",
+    "PRIVATE_PROVIDER_CONTENT",
+    "PRIVATE_COMPLETION",
+  ])
+    expect(saved).not.toContain(secret);
+  expect(observations.at(-1)).toMatchObject({ status: "cost_unknown" });
+});
+it("records safe parse-failure metadata for malformed HTTP-200 responses without retaining body excerpts", async () => {
+  const diagnostics: any[] = [],
+    observations: any[] = [];
+  let calls = 0;
+  const x = driver(
+    {},
+    {
+      diagnostic: async (d: any) => diagnostics.push(d),
+      observe: async (d: any) => observations.push(d),
+      fetchImpl: async () => {
+        calls++;
+        return new Response("synthetic-secret PRIVATE_PROMPT", {
+          status: 200,
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            "content-length": "31",
+          },
+        });
+      },
+    },
+  );
+  await expect(x.driver.run(job)).rejects.toThrow("PROVIDER_COST_UNKNOWN");
+  expect(calls).toBe(1);
+  expect(diagnostics[0]).toMatchObject({
+    reason: "invalid_json",
+    contentType: "text/html",
+    contentLength: "31",
+    parseErrorName: "SyntaxError",
+    parseErrorMessage: "Response could not be parsed as JSON",
+    costKnown: false,
+  });
+  expect(JSON.stringify(diagnostics)).not.toContain("synthetic-secret");
+  expect(JSON.stringify(diagnostics)).not.toContain("PRIVATE_PROMPT");
+  expect(observations.at(-1).status).toBe("invalid_response_cost_uncertain");
+});
+it("classifies response stream termination without copying the exception body", async () => {
+  const diagnostics: any[] = [];
+  const x = driver(
+    {},
+    {
+      diagnostic: async (d: any) => diagnostics.push(d),
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => {
+          throw new TypeError("terminated: synthetic-secret PRIVATE_PROMPT");
+        },
+      }),
+    },
+  );
+  await expect(x.driver.run(job)).rejects.toThrow("PROVIDER_COST_UNKNOWN");
+  expect(diagnostics[0]).toMatchObject({
+    parseErrorName: "TypeError",
+    parseErrorMessage: "Response body transfer or decoding failed",
+  });
+  expect(JSON.stringify(diagnostics)).not.toContain("PRIVATE_PROMPT");
+});
+it("holds null HTTP-200 payloads instead of losing the diagnostic to a property access error", async () => {
+  const diagnostics: any[] = [];
+  const x = driver(null, { diagnostic: async (d: any) => diagnostics.push(d) });
+  await expect(x.driver.run(job)).rejects.toThrow("PROVIDER_COST_UNKNOWN");
+  expect(diagnostics[0].reason).toBe("invalid_response_shape");
+  expect(x.requests).toHaveLength(1);
 });

@@ -1,6 +1,10 @@
 # League platform checkpoint — September 7, 2026
 
-Status: recommendation awaiting authenticated trial evidence and Joey’s selection. No migration, league creation, paid subscription or convention work has been performed.
+Status: **Authenticated core transactions passed; continue the unpaid MFL trial.** See [MFL_TRIAL_RESULTS.md](MFL_TRIAL_RESULTS.md) for current evidence and unresolved gates. The disposable league completed 192 scripted picks, scoped lineups, FCFS add/drop, FAAB request changes and bilateral trades through one commissioner account. Eleven franchises have no external owner account. No model owners or founding convention were activated.
+
+Core writes and bundled calculated fantasy scores are documented and the transaction paths above were exercised. Actual live scoring remains unavailable before kickoff; automated waiver awards/debits, complete schedule configuration, phone participation and session renewal remain unverified. Browser control timed out during the manual waiver confirmation; no award was observed, and the pending synthetic bids were canceled and independently confirmed empty. The convention stays paused. Earlier sections below are the dated pre-trial record, superseded by the results report wherever they say authentication is untested.
+
+The [current purchase page](https://home.myfantasyleague.com/purchase/) lists Custom at $109.95 and trial use into the regular season, allowing opening-game validation before payment. A separate raw NFL feed is not technically needed for the documented fantasy matchup scoreboard. The earlier API/publication terms distinction remains recorded in the feasibility audit; no publication was performed in this private trial.
 
 Joey requires self-service onboarding, near-real-time fantasy scores, a fair common scoring source, and minimal additional league-engine development. Commercial sales discussions and a multi-thousand-dollar season feed are not launch dependencies. The founding convention stays paused until the host/data path is selected and tested.
 
@@ -37,3 +41,17 @@ This keeps full engine ownership and therefore remaining season engineering. The
 - Ten persistent browser sessions are not assumed necessary. A browser fallback would need durable isolated sessions, reauthentication and action receipt checks; no Yahoo/ESPN unattended transaction test or permission assessment has passed.
 
 The constitution must describe only the selected platform’s verified behavior. Proposed fairness policy: one league-wide scoring authority, the same score snapshots available to everyone, visible freshness, a fixed correction/finalization policy, and separate measurement of news-response latency. Polling every 30–60 seconds is an operating target, not a promise about upstream update delay.
+
+## Trial authorization and handoff
+
+Joey clarified that the league will not sell admission or run advertisements and authorized the free trial. That clarification does not itself resolve the conflicting publication wording, but it does not block private testing. The standard Custom trial signup was opened in Codex and reaches the normal MFL login/create-account screen. Joey must sign in or create his commissioner account there; no credentials were requested in chat and no account or league has yet been created.
+
+## September 7, 9:08 PM Pacific — trial created
+
+- Chrome account `joeyblack4` authenticated; created **Black4 API Trial - Disposable**, league **46625**, host `www43`, season 2026: https://www43.myfantasyleague.com/2026/home/46625 . Creation and unpaid status independently visible in league home.
+- Twelve placeholder franchises, one division, sixteen roster spots, no IR/taxi, one roster per player, head-to-head, online draft defaults. These are disposable test configuration, not the owners' constitution. Starting lineup/scoring/schedule setup is still incomplete; the host flags an invalid/unselected fantasy schedule.
+- Saved and reopened Reports and Security Settings: both non-member access restrictions Yes; Pacific time; responsive mobile view Yes.
+- Important unresolved behavior: unauthenticated `league` and empty `rosters` exports still return data after saving those restrictions. Do not claim full API privacy enforcement. No private strategies, credentials or transcripts have been added; investigate before sensitive test content.
+- Actual `liveScoring` request returns HTTP 200 with an API error: `Live scoring not available until the season starts`. Treat as unavailable, never measured live scoring or zero points. Read receipts retained privately in `.local/research/platform-selection/mfl-trial-46625-read-check.json`.
+- No owner invitations, model calls, picks, trades, bids or lineup changes. Founding convention and actual AI identities remain inactive.
+- Runtime authentication and core write canaries remain pending. The signed-in browser session is usable for operator setup; it has not been exported as a runtime credential. Browser tab left on trial home.

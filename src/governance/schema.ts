@@ -2,6 +2,8 @@ import { z } from "zod";
 import { leagueRulesSchema } from "../league/schema.js";
 import { leagueCapabilityVersion } from "../league/capabilities.js";
 import { ScoringRulesSchema } from "../data/index.js";
+import { mflGovernanceCommands } from "./mfl-schema.js";
+export * from "./mfl-schema.js";
 const id = z
   .string()
   .min(1)
@@ -9,11 +11,14 @@ const id = z
   .regex(/^[a-zA-Z0-9_.:-]+$/);
 const common = { leagueId: id, idempotencyKey: z.string().min(1).max(160) };
 export const governanceCommandSchema = z.discriminatedUnion("type", [
+  ...mflGovernanceCommands,
   z
     .object({
       ...common,
       type: z.literal("openMeeting"),
       meetingId: id,
+      menuId: id.optional(),
+      discussionOpensAt: z.iso.datetime({ offset: true }).optional(),
       proposalDeadline: z.iso.datetime({ offset: true }),
       voteDeadline: z.iso.datetime({ offset: true }),
     })

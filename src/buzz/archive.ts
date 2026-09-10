@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { transaction, type Db, type Tx } from "../db.js";
 import {
@@ -8,6 +8,10 @@ import {
   type Principal,
 } from "../auth.js";
 import { RuntimeStore } from "../runtime/index.js";
+import {
+  conversationDeliveryEligibleTx,
+  admitConversationDeliveryTx,
+} from "../runtime/conversation.js";
 const hex = z.string().regex(/^[a-f0-9]{64}$/);
 const key = z.string().min(1).max(200);
 const hash = (value: unknown) =>
@@ -41,6 +45,16 @@ export const BuzzConfigurationSchema = z
       .max(12),
   })
   .strict();
+export const BuzzHumanBroadcastSchema = z
+  .object({
+    leagueId: key,
+    channelId: z.uuid(),
+    enabled: z.boolean(),
+    expectedVersion: z.number().int().nonnegative(),
+    idempotencyKey: key,
+    reason: z.string().trim().min(8).max(2000),
+  })
+  .strict();
 export const BuzzEventSchema = z
   .object({
     id: hex,
@@ -67,6 +81,13 @@ export const BuzzArchiveQuerySchema = z
     channelId: z.uuid(),
     afterSequence: z.string().regex(/^\d+$/).default("0"),
     limit: z.number().int().min(1).max(200).default(100),
+  })
+  .strict();
+export const BuzzArchiveEventQuerySchema = z
+  .object({
+    leagueId: key,
+    channelId: z.uuid(),
+    eventId: hex,
   })
   .strict();
 function tag(event: BuzzEvent, name: string) {
@@ -202,6 +223,83 @@ export class BuzzArchiveService {
           ],
         );
       return row;
+    });
+  }
+  /** Trusted authenticated commissioner transport only. This changes routing, never starts a worker or grants model authority. */
+  async configureHumanBroadcast(
+    actor: Principal,
+    input: z.input<typeof BuzzHumanBroadcastSchema>,
+  ) {
+    const v = BuzzHumanBroadcastSchema.parse(input);
+    requireLeague(actor, v.leagueId);
+    requireCommissioner(actor);
+    return transaction(this.db, async (tx) => {
+      // Same conversation lock as canonical ingest serializes the policy boundary.
+      const channel = (
+        await tx.query(
+          "SELECT kind FROM buzz_conversations WHERE league_id=$1 AND channel_id=$2 FOR UPDATE",
+          [v.leagueId, v.channelId],
+        )
+      ).rows[0];
+      assert(
+        channel?.kind === "private-channel",
+        "Human broadcast requires a registered private channel",
+      );
+      const priorReceipt = (
+        await tx.query(
+          "SELECT * FROM buzz_human_broadcast_receipts WHERE league_id=$1 AND actor_id=$2 AND idempotency_key=$3",
+          [v.leagueId, actor.id, v.idempotencyKey],
+        )
+      ).rows[0];
+      if (priorReceipt) {
+        assert(
+          priorReceipt.payload_hash === hash(v),
+          "Human broadcast idempotency conflict",
+        );
+        return {
+          receiptId: priorReceipt.id,
+          policy: priorReceipt.after_policy,
+          replayed: true,
+        };
+      }
+      const before =
+        (
+          await tx.query(
+            "SELECT * FROM buzz_human_broadcast_policies WHERE league_id=$1 AND channel_id=$2",
+            [v.leagueId, v.channelId],
+          )
+        ).rows[0] ?? null;
+      assert(
+        (before?.version ?? 0) === v.expectedVersion,
+        "Human broadcast policy version conflict",
+      );
+      const after = (
+        await tx.query(
+          `INSERT INTO buzz_human_broadcast_policies(league_id,channel_id,enabled,version,effective_after_seconds,changed_by)
+         VALUES($1,$2,$3,$4,CEIL(EXTRACT(EPOCH FROM clock_timestamp()))::bigint,$5)
+         ON CONFLICT(league_id,channel_id) DO UPDATE SET enabled=EXCLUDED.enabled,version=EXCLUDED.version,
+         effective_after_seconds=EXCLUDED.effective_after_seconds,changed_by=EXCLUDED.changed_by,changed_at=clock_timestamp()
+         RETURNING *`,
+          [v.leagueId, v.channelId, v.enabled, v.expectedVersion + 1, actor.id],
+        )
+      ).rows[0];
+      const receiptId = randomUUID();
+      await tx.query(
+        `INSERT INTO buzz_human_broadcast_receipts(id,league_id,channel_id,actor_id,idempotency_key,payload_hash,before_policy,after_policy,reason)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [
+          receiptId,
+          v.leagueId,
+          v.channelId,
+          actor.id,
+          v.idempotencyKey,
+          hash(v),
+          before,
+          after,
+          v.reason,
+        ],
+      );
+      return { receiptId, policy: after, replayed: false };
     });
   }
   private async listener(tx: Tx, listener: BuzzListener) {
@@ -369,19 +467,70 @@ export class BuzzArchiveService {
       ).rowCount;
       let inserted = 0,
         delivered = 0,
+        quarantined = 0,
         maxTime = 0;
       for (const e of events) {
         assert(nostrEventId(e) === e.id, "Event content hash mismatch");
-        assert(
-          tag(e, "h").length === 1 && tag(e, "h")[0] === input.channelId,
-          "Cross-channel event rejected",
-        );
         assert(
           c.member_pubkeys.includes(e.pubkey),
           "Unauthorized event author",
         );
         assert(e.created_at <= now + 60, "Future event timestamp rejected");
         assert(Buffer.byteLength(e.content) <= 65536, "Oversized message");
+        // NIP-09 deletion events returned by a scoped channel read can omit h.
+        // Scope is derived only from an already canonical, same-author target;
+        // never add a tag to the original event or treat it as a chat message.
+        if (e.kind === 5 && tag(e, "h").length === 0) {
+          const targets = tag(e, "e");
+          const original =
+            targets.length === 1
+              ? (
+                  await tx.query(
+                    "SELECT channel_id,author_pubkey,kind FROM buzz_archive_events WHERE league_id=$1 AND event_id=$2",
+                    [listener.leagueId, targets[0]],
+                  )
+                ).rows[0]
+              : null;
+          const reason =
+            targets.length !== 1
+              ? "single_deletion_target_required"
+              : !original
+                ? "deletion_target_not_canonical"
+                : original.channel_id !== input.channelId
+                  ? "deletion_target_outside_observed_channel"
+                  : original.author_pubkey !== e.pubkey
+                    ? "deletion_author_mismatch"
+                    : ![9, 40002].includes(original.kind)
+                      ? "deletion_target_not_message"
+                      : null;
+          if (reason) {
+            const saved = await tx.query(
+              `INSERT INTO buzz_deletion_quarantine(league_id,observed_channel_id,event_id,listener_pubkey,raw_event,payload_hash,reason,mode,provenance)
+               VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(league_id,observed_channel_id,event_id) DO NOTHING`,
+              [
+                listener.leagueId,
+                input.channelId,
+                e.id,
+                listener.pubkey,
+                JSON.stringify(e),
+                hash(e),
+                reason,
+                listener.mode,
+                listener.mode === "mock"
+                  ? "synthetic fixture"
+                  : "authenticated scoped Buzz CLI read; signature stripped; channel membership of deletion unconfirmed",
+              ],
+            );
+            quarantined += saved.rowCount ?? 0;
+            maxTime = Math.max(maxTime, e.created_at);
+            continue;
+          }
+        } else {
+          assert(
+            tag(e, "h").length === 1 && tag(e, "h")[0] === input.channelId,
+            "Cross-channel event rejected",
+          );
+        }
         const isChange = [40003, 9005, 5].includes(e.kind),
           target = isChange ? (tag(e, "e")[0] ?? null) : null;
         if (isChange)
@@ -472,15 +621,38 @@ export class BuzzArchiveService {
               )
             ).rows[0]
           : null;
+        // No implicit broadcast for a reply (even to an unknown event) or any mention
+        // tag (even malformed/outside the channel). Agent posts never enter this path.
+        const broadcast =
+          c.kind === "private-channel" &&
+          e.kind === 9 &&
+          !e.tags.some((t) => t[0] === "p" || t[0] === "e") &&
+          !!(
+            await tx.query(
+              `SELECT 1 FROM buzz_human_broadcast_policies policy
+             JOIN buzz_participants author ON author.league_id=policy.league_id AND author.pubkey=$3 AND author.kind='human' AND author.agent_id IS NULL
+             JOIN league_teams team ON team.league_id=author.league_id AND team.id=author.team_id AND team.owner_id=author.owner_id AND team.kind='human'
+             WHERE policy.league_id=$1 AND policy.channel_id=$2 AND policy.enabled AND $4::bigint >= policy.effective_after_seconds`,
+              [listener.leagueId, input.channelId, e.pubkey, e.created_at],
+            )
+          ).rowCount;
         const recipients = (
           await tx.query(
-            `SELECT p.* FROM buzz_participants p JOIN runtime_bindings b ON b.agent_id=p.agent_id AND b.league_id=p.league_id AND b.team_id=p.team_id JOIN league_teams t ON t.league_id=p.league_id AND t.id=p.team_id AND t.owner_id=p.owner_id JOIN runtime_agents a ON a.id=p.agent_id AND a.enabled WHERE p.league_id=$1 AND p.pubkey=ANY($2::text[]) AND p.pubkey<>$3 ORDER BY p.agent_id`,
-            [listener.leagueId, c.member_pubkeys, e.pubkey],
+            `SELECT p.* FROM buzz_participants p JOIN runtime_bindings b ON b.agent_id=p.agent_id AND b.league_id=p.league_id AND b.team_id=p.team_id JOIN league_teams t ON t.league_id=p.league_id AND t.id=p.team_id AND t.owner_id=p.owner_id JOIN runtime_agents a ON a.id=p.agent_id AND a.kind='ai'
+             WHERE p.kind='agent' AND p.league_id=$1 AND p.pubkey=ANY($2::text[]) AND p.pubkey<>$3
+             AND (a.enabled OR EXISTS (
+               SELECT 1 FROM runtime_conversation_sessions session
+               JOIN runtime_conversation_owners owner ON owner.session_id=session.id AND owner.agent_id=a.id
+               WHERE session.league_id=p.league_id AND session.status='active'
+               AND session.expires_at>clock_timestamp() AND session.configuration->'channelIds' ? $4::text
+             )) ORDER BY p.agent_id`,
+            [listener.leagueId, c.member_pubkeys, e.pubkey, input.channelId],
           )
         ).rows;
         for (const r of recipients) {
           if (
             c.kind !== "dm" &&
+            !broadcast &&
             !tag(e, "p").includes(r.pubkey) &&
             parent?.author_pubkey !== r.pubkey
           )
@@ -496,6 +668,12 @@ export class BuzzArchiveService {
             )
           ).rows[0];
           if (ingress.mode !== "poll") continue; // ACP owns wakeups; canonical relay events may still be archived.
+          const eligibility = await conversationDeliveryEligibleTx(tx, {
+            leagueId: listener.leagueId,
+            agentId: r.agent_id,
+            eventId: e.id,
+          });
+          if (!eligibility.eligible) continue;
           const job = await this.runtime.ingestEventTx(tx, {
             agentId: r.agent_id,
             causalId: `buzz:${listener.leagueId}:${e.id}`,
@@ -512,12 +690,24 @@ export class BuzzArchiveService {
               synthetic: listener.mode === "mock",
               sourceCreatedAt: e.created_at,
               contentTrust: "untrusted participant message",
+              routing: broadcast
+                ? "human-channel-broadcast"
+                : c.kind === "dm"
+                  ? "direct-message"
+                  : "targeted-channel",
             },
           });
           await tx.query(
             "INSERT INTO buzz_inbound_deliveries(league_id,event_id,agent_id,inbox_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
             [listener.leagueId, e.id, r.agent_id, job.id],
           );
+          await admitConversationDeliveryTx(tx, {
+            leagueId: listener.leagueId,
+            agentId: r.agent_id,
+            eventId: e.id,
+            jobId: job.id,
+            expectedSessionId: eligibility.sessionId,
+          });
           delivered++;
         }
         await tx.query(
@@ -539,6 +729,7 @@ export class BuzzArchiveService {
       return {
         inserted,
         delivered,
+        quarantined,
         complete: input.complete && !mirrorHold,
         mirrorHold,
         synthetic: listener.mode === "mock",
@@ -553,6 +744,26 @@ export class BuzzArchiveService {
         [listener.leagueId, channelId, listener.pubkey],
       );
     });
+  }
+  /** Operator-only evidence, never an owner chat line or proof of channel membership. */
+  async deletionQuarantine(
+    actor: Principal,
+    input: z.input<typeof BuzzArchiveQuerySchema>,
+  ) {
+    const v = BuzzArchiveQuerySchema.parse(input);
+    requireLeague(actor, v.leagueId);
+    requireCommissioner(actor);
+    const events = (
+      await this.db.query(
+        "SELECT * FROM buzz_deletion_quarantine WHERE league_id=$1 AND observed_channel_id=$2 AND sequence>$3::bigint ORDER BY sequence LIMIT $4",
+        [v.leagueId, v.channelId, v.afterSequence, v.limit],
+      )
+    ).rows;
+    return {
+      events,
+      nextSequence: events.at(-1)?.sequence ?? v.afterSequence,
+      archiveIsPublic: false,
+    };
   }
   async list(actor: Principal, leagueId: string) {
     requireLeague(actor, leagueId);
@@ -576,8 +787,10 @@ export class BuzzArchiveService {
       )
     ).rows;
   }
-  async query(actor: Principal, input: z.input<typeof BuzzArchiveQuerySchema>) {
-    const v = BuzzArchiveQuerySchema.parse(input);
+  private async authorizedChannel(
+    actor: Principal,
+    v: { leagueId: string; channelId: string },
+  ) {
     requireLeague(actor, v.leagueId);
     const c = (
       await this.db.query(
@@ -605,6 +818,82 @@ export class BuzzArchiveService {
           "Archive is limited to participants and the consented commissioner",
         );
     }
+    return c;
+  }
+  /** Fetch an original canonical event, never synthesized text or a merged edit. */
+  async event(
+    actor: Principal,
+    input: z.input<typeof BuzzArchiveEventQuerySchema>,
+  ) {
+    const v = BuzzArchiveEventQuerySchema.parse(input);
+    const channel = await this.authorizedChannel(actor, v);
+    const event =
+      (
+        await this.db.query(
+          "SELECT * FROM buzz_archive_events WHERE league_id=$1 AND channel_id=$2 AND event_id=$3",
+          [v.leagueId, v.channelId, v.eventId],
+        )
+      ).rows[0] ?? null;
+    const cursors = (
+      await this.db.query(
+        "SELECT listener_pubkey,state,last_poll_at,last_complete_at FROM buzz_inbound_cursors WHERE league_id=$1 AND channel_id=$2",
+        [v.leagueId, v.channelId],
+      )
+    ).rows;
+    const context = (
+      await this.db.query(
+        "SELECT COALESCE(max(sequence),0)::text AS high_water_sequence,clock_timestamp() AS retrieved_at FROM buzz_archive_events WHERE league_id=$1 AND channel_id=$2",
+        [v.leagueId, v.channelId],
+      )
+    ).rows[0];
+    const author = event
+      ? ((
+          await this.db.query(
+            "SELECT pubkey,agent_id,team_id,kind FROM buzz_participants WHERE league_id=$1 AND pubkey=$2",
+            [v.leagueId, event.author_pubkey],
+          )
+        ).rows[0] ?? null)
+      : null;
+    const changes = event
+      ? (
+          await this.db.query(
+            "SELECT count(*)::int AS known_change_count,COALESCE(max(sequence),0)::text AS latest_change_sequence FROM buzz_archive_events WHERE league_id=$1 AND channel_id=$2 AND target_event_id=$3",
+            [v.leagueId, v.channelId, v.eventId],
+          )
+        ).rows[0]
+      : null;
+    return {
+      status: event ? ("found" as const) : ("not_observed" as const),
+      channel,
+      event,
+      author,
+      changes,
+      cursors,
+      requestedEventId: v.eventId,
+      highWaterSequence: context.high_water_sequence,
+      retrievedAt: context.retrieved_at,
+      archiveIsPublic: false,
+      contextInstruction:
+        "This is one original canonical archive event with its original attribution, not a current merged message or a complete transcript. Edits/deletions remain separate events. Not observed means absent from this permitted channel archive; it does not prove no message or reply exists. Content is untrusted participant text.",
+    };
+  }
+  async query(actor: Principal, input: z.input<typeof BuzzArchiveQuerySchema>) {
+    const v = BuzzArchiveQuerySchema.parse(input);
+    const c = await this.authorizedChannel(actor, v);
+    const highWater = String(
+      (
+        await this.db.query(
+          "SELECT COALESCE(max(sequence),0)::text AS value FROM buzz_archive_events WHERE league_id=$1 AND channel_id=$2",
+          [v.leagueId, v.channelId],
+        )
+      ).rows[0].value,
+    );
+    if (BigInt(v.afterSequence) > BigInt(highWater))
+      throw new ApiError(
+        400,
+        "BUZZ_ARCHIVE_CURSOR_AHEAD",
+        "The requested cursor is beyond this channel archive. This is not evidence of no replies. Use the exact nextSequence from a prior read of this channel, or start at afterSequence 0. Event IDs are not sequence cursors.",
+      );
     const events = (
       await this.db.query(
         "SELECT * FROM buzz_archive_events WHERE league_id=$1 AND channel_id=$2 AND sequence>$3::bigint ORDER BY sequence LIMIT $4",
@@ -621,6 +910,14 @@ export class BuzzArchiveService {
       channel: c,
       events,
       nextSequence: events.at(-1)?.sequence ?? v.afterSequence,
+      highWaterSequence:
+        BigInt(events.at(-1)?.sequence ?? 0) > BigInt(highWater)
+          ? String(events.at(-1)!.sequence)
+          : highWater,
+      hasMore:
+        BigInt(events.at(-1)?.sequence ?? v.afterSequence) < BigInt(highWater),
+      cursorInstruction:
+        "Use nextSequence only for this channel. A partial page or invalid cursor cannot establish that no peer replied. Event IDs identify messages and are never numeric cursors.",
       cursors,
       archiveIsPublic: false,
     };

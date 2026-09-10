@@ -1,3 +1,4 @@
+import { createECDH } from "node:crypto";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   planDmOpen,
@@ -111,6 +112,60 @@ describe("Buzz receipts with simulated CLI only", () => {
         runner,
       ),
     ).rejects.toThrow("conflict");
+  });
+  it("persists bounded CLI diagnostics while withholding credential and message echoes", async () => {
+    const key = "0".repeat(63) + "1";
+    const ecdh = createECDH("secp256k1");
+    ecdh.setPrivateKey(Buffer.from(key, "hex"));
+    const pubkey = ecdh.getPublicKey("hex", "compressed").slice(2);
+    const runner = createCliRunner({
+      executable: process.execPath,
+      environment: {
+        BUZZ_PRIVATE_KEY: key,
+        BUZZ_RELAY_URL: actor.communityUrl,
+      },
+      allowExternalSends: true,
+    });
+    // Local fake process only: it does not contact Buzz or any provider.
+    const plan = {
+      actorPubkey: pubkey,
+      communityUrl: actor.communityUrl,
+      command: "send" as const,
+      channelId: channel.id,
+      stdin: "PRIVATE MESSAGE CONTENT",
+      args: [
+        "-e",
+        "process.stderr.write(JSON.stringify({error:'user_error',message:'mentioned pubkeys are not channel members: PRIVATE MESSAGE CONTENT '+process.env.BUZZ_PRIVATE_KEY}));process.exitCode=1",
+      ],
+    };
+    const result = await service.execute(
+      "test-safe-process-diagnostic",
+      plan,
+      runner,
+    );
+    expect(result.status).toBe("unknown");
+    expect(result.cli_diagnostic).toMatchObject({
+      exitCode: 1,
+      termination: "exited",
+      stderrCategory: "user_error",
+      stderrMessageClass: "Mentioned identity is not a channel member",
+      stdoutJsonValid: false,
+    });
+    expect(JSON.stringify(result.cli_diagnostic)).not.toContain(key);
+    expect(JSON.stringify(result.cli_diagnostic)).not.toContain(
+      "PRIVATE MESSAGE CONTENT",
+    );
+    expect(
+      (
+        await service.execute(
+          "test-safe-process-diagnostic",
+          plan,
+          async () => {
+            throw Error("must never resend");
+          },
+        )
+      ).replayed,
+    ).toBe(true);
   });
   it("marks ambiguous external failure unknown and requires reconciliation instead of retry", async () => {
     let calls = 0;

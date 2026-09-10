@@ -8,6 +8,7 @@ COPY scripts ./scripts
 COPY tests ./tests
 COPY migrations ./migrations
 COPY public ./public
+COPY skills ./skills
 COPY deploy/container-entrypoint.mjs ./deploy/container-entrypoint.mjs
 RUN npm run build
 USER node

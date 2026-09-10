@@ -1,0 +1,328 @@
+{
+  "menuId": "mfl-native-menu-v1",
+  "title": "Black4 founding constitution \u2014 verified MFL season choices",
+  "questions": [
+    {
+      "id": "format",
+      "label": "League format",
+      "options": [
+        {
+          "id": "redraft-h2h",
+          "label": "12-team redraft head-to-head",
+          "content": "Twelve franchises, one division, head-to-head play, each NFL player eligible for one franchise roster; no salaries/contracts, IR or taxi squad. Full-season redraft.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=GENERAL"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scoring",
+      "label": "Scoring",
+      "options": [
+        {
+          "id": "mfl-ppr",
+          "label": "MFL PPR package",
+          "content": "Native MFL PPR package, unchanged. QB/RB/WR/TE/PK: passing TD4 (0\u201310), passing yards0.04 (-50\u2013999), interceptions thrown-2 (0\u201310), passing/rushing/receiving two-point conversions2 (0\u201310), rushing TD6 (0\u201310), rushing yards0.1 (-50\u2013999), receiving TD6 (0\u201310), receiving yards0.1 (-50\u2013999), receptions1 (0\u201399), lost fumbles-2 (0\u201310), offensive fumble recovery/punt return/kickoff return TD6 (0\u201310). Made FG0\u201329yards3;30\u201399yards3 at30 plus0.1 per yard above30. Extra points1 (0\u201399). DEF offensive plus special-teams points against:0=10,1\u20136=7,7\u201320=4,21\u201329=1,30\u201399=-3. DEF fumble recoveries/interceptions/safeties2 (0\u201310), sacks1 (0\u201325), defensive and special-teams TD6 (0\u201310). Exact package ranges retained; no custom bonuses or half-PPR.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/describe?NAME=PPR"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "roster",
+      "label": "Roster size",
+      "options": [
+        {
+          "id": "16",
+          "label": "16 roster spots",
+          "content": "Maximum active roster 16; draft 16 rounds. No IR or taxi squad.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=GENERAL"
+          ]
+        },
+        {
+          "id": "18",
+          "label": "18 roster spots",
+          "content": "Maximum active roster 18; draft 18 rounds. No IR or taxi squad.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=GENERAL"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lineup",
+      "label": "Starting lineup",
+      "options": [
+        {
+          "id": "native-eight",
+          "label": "8 starters with PK and DEF",
+          "content": "Exactly QB1,RB2,WR2,TE1,PK1,Def1 (eight total).",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=LINEUP"
+          ]
+        },
+        {
+          "id": "flex-nine",
+          "label": "9 starters including one flex",
+          "content": "Exactly QB1,RB2,WR2,TE1,one additional RB/WR/TE,PK1,Def1. Configure min/max QB1/1,RB2/3,WR2/3,TE1/2,PK1/1,Def1/1, total9. Derived from verified min/max native controls; commissioner must validate saved legal-lineup read-back.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=LINEUP"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lineup-behavior",
+      "label": "Owner control of lineups",
+      "options": [
+        {
+          "id": "gametime-owner",
+          "label": "Gametime locks; owner chooses starters",
+          "content": "Players lock at their scheduled game kickoff. Partial lineups No; best ball No; automatic added-player starters No; Fantasy Sharks Lineup Coach off for every franchise. Never hide starters. Allow bye players Yes. Automatically carry prior lineup at beginning of week; owner may replace unlocked players.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=LINEUP"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "draft-order",
+      "label": "Draft format",
+      "options": [
+        {
+          "id": "snake",
+          "label": "Snake using exact proposed order",
+          "content": "Use the exact twelve-team teamOrder array in this proposal for round1. MFL S-draft: odd rounds repeat round1, even rounds reverse it. Number of rounds equals selected roster capacity. No random draw after approval.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/support?PROGRAM=csetup_draftord&L=62282"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "draft-pace",
+      "label": "Draft pace target",
+      "options": [
+        {
+          "id": "target-120",
+          "label": "120 second operator target",
+          "content": "Live MFL draft, native timer DISABLED. Target 120 seconds per pick is an operator coordination target only, not an automatic timeout promise. If a franchise stalls, alert commissioner; do not fabricate a pick. Native queue precedence is owner Work List then My Draft List; set empty-list fallback Skip, all automatic-on-clock franchise flags off, no Fantasy Sharks/ADP auto-selection. No skipped pick without explicit handling.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=DRAFT"
+          ]
+        },
+        {
+          "id": "target-180",
+          "label": "180 second operator target",
+          "content": "Live MFL draft, native timer DISABLED. Target 180 seconds per pick is an operator coordination target only, not an automatic timeout promise. If a franchise stalls, alert commissioner; do not fabricate a pick. Native queue precedence is owner Work List then My Draft List; set empty-list fallback Skip, all automatic-on-clock franchise flags off, no Fantasy Sharks/ADP auto-selection. No skipped pick without explicit handling.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=DRAFT"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "acquisitions",
+      "label": "FAAB and free agents",
+      "options": [
+        {
+          "id": "faab-fcfs",
+          "label": "FAAB with unlocked FCFS",
+          "content": "Blind Bid Requests For Locked Players, First Come/First Serve For Rest. Season FAAB100, minimum0, increment1, nonconditional bids, no FCFS debit, no real-dollar charges, no carryover. No weekly or seasonal acquisition limits. Automatic runs Wed/Thu/Fri/Sat at5amET. Lock free agents Sunday1pmET. Prevent individual-game roster moves from kickoff until week end. Dropped players locked until first waiver run after1day. Existing native processing blackouts apply.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=ADDDROP",
+            "https://www43.myfantasyleague.com/2026/csetup?L=46625&C=BBIDWAIV",
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=FREEAG"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "faab-tie",
+      "label": "Equal FAAB bids",
+      "options": [
+        {
+          "id": "longest-wait",
+          "label": "Longest since last winning bid",
+          "content": "Use native How Long Since Franchise Won A Bid (longest time wins).",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=46625&C=BBIDWAIV"
+          ]
+        },
+        {
+          "id": "earliest",
+          "label": "Earliest submitted bid",
+          "content": "Use native Earliest Submitted Bid Wins.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=46625&C=BBIDWAIV"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "trade-review",
+      "label": "Trade approval",
+      "options": [
+        {
+          "id": "bilateral",
+          "label": "Immediate after both owners agree",
+          "content": "Process immediately when receiving owner accepts. No league-wide poll. Invalid-roster trades No; gametime acceptance prevented Yes; future draft picks Not Allowed; proposal expiry7days. Comments remain private.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=TRADES"
+          ]
+        },
+        {
+          "id": "commissioner",
+          "label": "Commissioner reviews accepted trade",
+          "content": "Receiving owner accepts then commissioner approval required. Invalid-roster trades No; gametime acceptance prevented Yes; future draft picks Not Allowed; proposal expiry7days. Comments remain private.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=TRADES"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "playoff-package",
+      "label": "Regular season and playoff package",
+      "options": [
+        {
+          "id": "six-week15",
+          "label": "14 regular weeks;6-team playoffs15\u201317",
+          "content": "Native regular-season schedule1_1_12_14-c: weeks1\u201314, eight opponents once and three twice, one game per team per week, no doubleheaders. Retain franchise assignment order; no schedule randomization. Standings stop afterweek14. Native6-team bracket startsweek15:4v5 and3v6; seed1 andseed2 byes. Week16 seed1 faces4/5winner andseed2 faces3/6winner. Week17 final. Fixed bracket; no reseeding, no third-place or consolation bracket. Official preview verified.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=PACKSCHED",
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=STANDINGS",
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=PACKPO"
+          ]
+        },
+        {
+          "id": "four-week16",
+          "label": "15 regular weeks;4-team playoffs16\u201317",
+          "content": "Native regular-season schedule1_1_12_15-c: weeks1\u201315, seven opponents once and four twice, one game per team per week, no doubleheaders. Retain franchise assignment order; no schedule randomization. Standings stop afterweek15. Native4-team bracket startsweek16:1v4 and2v3; week17final. Fixed bracket; no reseeding, no third-place or consolation bracket. Official preview verified.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=PACKSCHED",
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=STANDINGS",
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=PACKPO"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "standings-seeds",
+      "label": "Standings and playoff qualification",
+      "options": [
+        {
+          "id": "wins-points-allplay",
+          "label": "Winning percentage, points, all-play",
+          "content": "Standings ordered by1 overall winning percentage,2 total points scored,3 all-play winning percentage,4 head-to-head record,5 last weeks point total,6 None. Regular-season ties count as ties. After final regular week and official Thursday stat corrections, commissioner manually seeds the top4 or6 (selected package) in that order via native Manually Seed Playoff Teams. If still exactly tied, earlier position in the owner-approved teamOrder wins the seed; this last step is a transparent commissioner rule, not a claimed native sort option. No auto-seed rule is invented. Non-playoff franchises retain acquisition access through the season end.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=STANDINGS",
+            "https://www43.myfantasyleague.com/2026/support?L=62282&FAQ=925",
+            "https://www43.myfantasyleague.com/2026/support?L=62282&FAQ=877"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "score-operation",
+      "label": "Score precision, corrections and playoff ties",
+      "options": [
+        {
+          "id": "official-corrections",
+          "label": "Two decimals; official corrections; higher-seed playoff tie",
+          "content": "Calculate weeks1\u201317 inclusive with2 decimal places; no minimum player/team score, no home-field bonus, no bench points, no extra median matchup. Automatically apply official Thursday morning stat changes. During regular season count tied games as ties; before playoffs commissioner sets native manual-tie mode. A tied playoff matchup advances the higher original seed via native Break Ties after official corrections, with a visible receipt. No arbitrary point fabrication. Bracket advancement is provisional until corrections resolve.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/csetup?L=62282&C=SCORING",
+            "https://www43.myfantasyleague.com/2026/support?L=62282&FAQ=877"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "trade-deadline",
+      "label": "Season trade deadline",
+      "options": [
+        {
+          "id": "week11",
+          "label": "Kickoff of NFLweek11",
+          "content": "Create native No Trades Allowed calendar event starting Kickoff of Week11 (currently2026-11-19 17:15 America/Los_Angeles), ending Never; one-time event. Native event controls enforce the cutoff; no custom display-only event. No acceptance after deadline.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/options?L=62282&O=110"
+          ]
+        },
+        {
+          "id": "week12",
+          "label": "Kickoff of NFLweek12",
+          "content": "Create native No Trades Allowed calendar event starting Kickoff of Week12 (currently2026-11-25 17:00 America/Los_Angeles), ending Never; one-time event. Native event controls enforce the cutoff; no custom display-only event. No acceptance after deadline.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/options?L=62282&O=110"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "season-close",
+      "label": "Acquisition season end",
+      "options": [
+        {
+          "id": "week18",
+          "label": "Close before NFLweek18",
+          "content": "Create native No Add/Drops Allowed event starting Kickoff of Week18 (currently2027-01-10 10:00 America/Los_Angeles), ending Never; one-time event. This allows all franchises to manage rosters through theweek17 championship; no post-season acquisitions.",
+          "evidenceRefs": [
+            "https://www43.myfantasyleague.com/2026/options?L=62282&O=110"
+          ]
+        }
+      ]
+    }
+  ],
+  "applicationSections": [
+    {
+      "id": "general-roster",
+      "label": "League and roster capacity"
+    },
+    {
+      "id": "scoring",
+      "label": "Exact PPR package and event ranges"
+    },
+    {
+      "id": "lineup",
+      "label": "Starters and player locks"
+    },
+    {
+      "id": "draft",
+      "label": "Live draft, disabled timer, owner queues and exact snake order"
+    },
+    {
+      "id": "waivers",
+      "label": "FAAB budget, schedule, ties and holds"
+    },
+    {
+      "id": "trades",
+      "label": "Trade acceptance and roster locks"
+    },
+    {
+      "id": "playoffs",
+      "label": "Selected native playoff package and actual bracket"
+    },
+    {
+      "id": "league-policies",
+      "label": "Exact non-native owner policies and pace target"
+    },
+    {
+      "id": "schedule",
+      "label": "Exact regular-season schedule and standings cutoff"
+    },
+    {
+      "id": "standings-seeding",
+      "label": "Ordered standings criteria and documented manual seeding/ties"
+    },
+    {
+      "id": "calendar-deadlines",
+      "label": "Native No Trades/No AddDrops deadline events"
+    }
+  ],
+  "sourceNote": "Prepared from read-only native MFL UI and official help on2026-09-07 at22:25PT; not registered, voted or applied. Covers complete season mechanics throughweek17, with native packaged regular schedules and fixed4/6-team brackets visually verified. Manual commissioner seeding, residual seed tie resolution and playoff tie advancement are explicit operational duties; no unverified automatic seeding/reseeding promise. No half-PPR/custom bonuses, auction, IR/taxi, bestball, external auto-ranking or automatic120/180second timeout. Free-text leaguePolicies cannot override selected football options, spend limits or human consent. Chris remains uncast, never a proxy vote. All native configuration requires exact read-back before an application attestation; this menu itself makes no external changes."
+}

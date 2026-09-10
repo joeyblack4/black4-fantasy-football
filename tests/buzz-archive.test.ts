@@ -180,6 +180,156 @@ describe("private Buzz archive and listener — synthetic fixtures only", () => 
       (await f.db.query("SELECT * FROM buzz_inbound_cursors")).rowCount,
     ).toBe(0);
   });
+  it("archives an h-less deletion only through its canonical same-author target, without changing raw tags", async () => {
+    const original = event("original");
+    const ingest = (events: BuzzEvent[]) =>
+      service.ingestBatch(listener(), {
+        channelId: room,
+        memberPubkeys: pubkeys.slice(0, 2),
+        events,
+        complete: true,
+      });
+    await ingest([original]);
+    const deletion = event("", {
+      kind: 5,
+      content: "",
+      tags: [["e", original.id]],
+    });
+    const result = await ingest([deletion]);
+    expect(result.inserted).toBe(1);
+    expect(result.delivered).toBe(0);
+    const archive = await service.query(owner(1), {
+      leagueId,
+      channelId: room,
+    });
+    const saved = archive.events.find((e) => e.event_id === deletion.id);
+    expect(saved.relation_status).toBe("valid");
+    expect(saved.tags).toEqual(deletion.tags);
+    expect(nostrEventId(deletion)).toBe(saved.event_id);
+    expect((await ingest([deletion])).inserted).toBe(0);
+  });
+  it("quarantines unknown, wrong-author, and multi-target h-less deletions without poisoning normal messages", async () => {
+    const original = event("known original");
+    const ingest = (events: BuzzEvent[]) =>
+      service.ingestBatch(listener(), {
+        channelId: room,
+        memberPubkeys: pubkeys.slice(0, 2),
+        events,
+        complete: true,
+      });
+    await ingest([original]);
+    const unknown = event("", {
+      kind: 5,
+      content: "",
+      tags: [["e", "f".repeat(64)]],
+    });
+    const wrongAuthor = event("", {
+      kind: 5,
+      content: "",
+      pubkey: pubkeys[1]!,
+      tags: [["e", original.id]],
+    });
+    const multiple = event("", {
+      kind: 5,
+      content: "",
+      tags: [
+        ["e", original.id],
+        ["e", "f".repeat(64)],
+      ],
+    });
+    const normal = event("useful message after deletion", {
+      created_at: original.created_at + 1,
+    });
+    const result = await ingest([unknown, wrongAuthor, multiple, normal]);
+    expect(result).toMatchObject({
+      inserted: 1,
+      quarantined: 3,
+      delivered: 1,
+      complete: true,
+    });
+    const evidence = await service.deletionQuarantine(commissioner, {
+      leagueId,
+      channelId: room,
+    });
+    expect(evidence.events).toHaveLength(3);
+    expect(evidence.events.map((e) => e.reason).sort()).toEqual([
+      "deletion_author_mismatch",
+      "deletion_target_not_canonical",
+      "single_deletion_target_required",
+    ]);
+    expect(
+      evidence.events.find((e) => e.event_id === unknown.id).raw_event,
+    ).toEqual(unknown);
+    await expect(
+      service.deletionQuarantine(owner(0), { leagueId, channelId: room }),
+    ).rejects.toThrow();
+    await expect(
+      service.deletionQuarantine(
+        { ...commissioner, leagueId: "other" },
+        { leagueId, channelId: room },
+      ),
+    ).rejects.toThrow();
+    expect(
+      (await service.query(owner(1), { leagueId, channelId: room })).events,
+    ).toHaveLength(2);
+    expect(
+      (await ingest([unknown, wrongAuthor, multiple, normal])).quarantined,
+    ).toBe(0);
+    expect(
+      (await f.db.query("SELECT state FROM buzz_inbound_cursors")).rows[0]
+        .state,
+    ).toBe("healthy");
+  });
+  it("cannot associate an h-less deletion with a canonical target in a different conversation", async () => {
+    await service.discoverDm(listener(), {
+      channelId: humanRoom,
+      memberPubkeys: pubkeys.slice(0, 2),
+      receiptId: "synthetic-other-room",
+    });
+    const original = event("other room original", { tags: [["h", humanRoom]] });
+    await service.ingestBatch(listener(), {
+      channelId: humanRoom,
+      memberPubkeys: pubkeys.slice(0, 2),
+      events: [original],
+      complete: true,
+    });
+    const deletion = event("", {
+      kind: 5,
+      content: "",
+      tags: [["e", original.id]],
+    });
+    const result = await service.ingestBatch(listener(), {
+      channelId: room,
+      memberPubkeys: pubkeys.slice(0, 2),
+      events: [deletion, event("still delivered")],
+      complete: true,
+    });
+    expect(result).toMatchObject({ inserted: 1, quarantined: 1, delivered: 1 });
+    const evidence = await service.deletionQuarantine(commissioner, {
+      leagueId,
+      channelId: room,
+    });
+    expect(evidence.events[0].reason).toBe(
+      "deletion_target_outside_observed_channel",
+    );
+    expect(
+      (await service.query(owner(1), { leagueId, channelId: humanRoom }))
+        .events,
+    ).toHaveLength(1);
+  });
+  it("still rejects ordinary messages without channel tags", async () => {
+    await expect(
+      service.ingestBatch(listener(), {
+        channelId: room,
+        memberPubkeys: pubkeys.slice(0, 2),
+        events: [event("unscoped", { tags: [] })],
+        complete: true,
+      }),
+    ).rejects.toThrow("Cross-channel event rejected");
+    expect(
+      (await f.db.query("SELECT * FROM buzz_archive_events")).rowCount,
+    ).toBe(0);
+  });
   it("retains edit/delete history and distinguishes invalid cross-author edits", async () => {
     const original = event("initial"),
       edit = event("correction", {
@@ -318,4 +468,398 @@ describe("private Buzz archive and listener — synthetic fixtures only", () => 
       messages.send(owner(0), { ...input, operationKey: "new" }, runner),
     ).rejects.toThrow("Fresh sender");
   });
+});
+
+it("rejects a fabricated future cursor and distinguishes partial pages from no replies", async () => {
+  const firstTime = Math.floor(Date.now() / 1000) - 10;
+  await service.ingestBatch(listener(), {
+    channelId: room,
+    memberPubkeys: pubkeys.slice(0, 2),
+    events: [
+      event("first", { created_at: firstTime }),
+      event("real peer response", {
+        pubkey: pubkeys[1],
+        created_at: firstTime + 1,
+      }),
+    ],
+    complete: true,
+  });
+  const first = await service.query(owner(0), {
+    leagueId,
+    channelId: room,
+    limit: 1,
+  });
+  expect(first.events).toHaveLength(1);
+  expect(first.hasMore).toBe(true);
+  expect(BigInt(first.highWaterSequence)).toBeGreaterThan(
+    BigInt(first.nextSequence),
+  );
+  const next = await service.query(owner(0), {
+    leagueId,
+    channelId: room,
+    afterSequence: first.nextSequence,
+    limit: 1,
+  });
+  expect(next.events[0].content).toContain("real peer response");
+  expect(next.hasMore).toBe(false);
+  const empty = await service.query(owner(0), {
+    leagueId,
+    channelId: room,
+    afterSequence: next.nextSequence,
+  });
+  expect(empty.events).toEqual([]);
+  expect(empty.hasMore).toBe(false);
+  await expect(
+    service.query(owner(0), {
+      leagueId,
+      channelId: room,
+      afterSequence: "89400",
+    }),
+  ).rejects.toMatchObject({ code: "BUZZ_ARCHIVE_CURSOR_AHEAD" });
+  await expect(
+    service.query(owner(3), {
+      leagueId,
+      channelId: room,
+      afterSequence: "89400",
+    }),
+  ).rejects.toMatchObject({ code: "BUZZ_ARCHIVE_FORBIDDEN" });
+});
+
+it("event lookup returns only the exact original with attribution and separate change metadata", async () => {
+  const original = event("original owner message");
+  const edit = event("later edit", {
+    kind: 40003,
+    tags: [
+      ["h", room],
+      ["e", original.id],
+    ],
+  });
+  await service.ingestBatch(listener(), {
+    channelId: room,
+    memberPubkeys: pubkeys.slice(0, 2),
+    events: [original, edit],
+    complete: true,
+  });
+  const result = await service.event(owner(1), {
+    leagueId,
+    channelId: room,
+    eventId: original.id,
+  });
+  expect(result.status).toBe("found");
+  expect(result.event).toMatchObject({
+    event_id: original.id,
+    content: original.content,
+    author_pubkey: original.pubkey,
+    mode: "mock",
+    provenance: "synthetic fixture",
+  });
+  expect(result.author).toEqual({
+    pubkey: original.pubkey,
+    agent_id: "agent-0",
+    team_id: "team-0",
+    kind: "agent",
+  });
+  expect(result.changes.known_change_count).toBe(1);
+  expect(result.event.sequence).toMatch(/^\d+$/);
+  expect(result.cursors[0].state).toBe("healthy");
+  expect(result.archiveIsPublic).toBe(false);
+  expect(JSON.stringify(result)).not.toContain(edit.content);
+  await expect(
+    service.event(owner(3), {
+      leagueId,
+      channelId: room,
+      eventId: original.id,
+    }),
+  ).rejects.toThrow("Archive is limited");
+  await expect(
+    service.event(
+      { ...owner(1), leagueId: "another-league" },
+      { leagueId, channelId: room, eventId: original.id },
+    ),
+  ).rejects.toThrow();
+});
+
+it("event lookup cannot reveal an event through a different authorized channel or unknown ID", async () => {
+  const original = event("private original");
+  await service.ingestBatch(listener(), {
+    channelId: room,
+    memberPubkeys: pubkeys.slice(0, 2),
+    events: [original],
+    complete: true,
+  });
+  await service.registerChannel(commissioner, {
+    leagueId,
+    channelId: humanRoom,
+    memberPubkeys: pubkeys.slice(0, 3),
+    receiptId: "synthetic-other-channel",
+  });
+  for (const input of [
+    { channelId: humanRoom, eventId: original.id },
+    { channelId: room, eventId: "f".repeat(64) },
+  ]) {
+    const result = await service.event(owner(1), { leagueId, ...input });
+    expect(result).toMatchObject({
+      status: "not_observed",
+      event: null,
+      author: null,
+      changes: null,
+    });
+    expect(JSON.stringify(result)).not.toContain(original.content);
+  }
+  await expect(
+    service.event(owner(1), { leagueId, channelId: room, eventId: "123" }),
+  ).rejects.toThrow();
+});
+
+const broadcastPolicy = () => ({
+  leagueId,
+  channelId: humanRoom,
+  enabled: true,
+  expectedVersion: 0,
+  idempotencyKey: "synthetic-broadcast-enable",
+  reason: "SYNTHETIC human channel announcement opt-in",
+});
+async function broadcastRoom() {
+  await service.registerChannel(commissioner, {
+    leagueId,
+    channelId: humanRoom,
+    memberPubkeys: pubkeys.slice(0, 3),
+    receiptId: "synthetic-broadcast-members",
+  });
+  return service.configureHumanBroadcast(commissioner, broadcastPolicy());
+}
+function humanPost(text: string, at: number, extraTags: string[][] = []) {
+  return event(text, {
+    pubkey: pubkeys[2],
+    created_at: at,
+    tags: [["h", humanRoom], ...extraTags],
+  });
+}
+const ingestHuman = (events: BuzzEvent[], i = 0) =>
+  service.ingestBatch(listener(i), {
+    channelId: humanRoom,
+    memberPubkeys: pubkeys.slice(0, 3),
+    events,
+    complete: true,
+  });
+it("SYNTHETIC human broadcast is opt-in, fresh, same-channel and deduplicated across listeners", async () => {
+  await service.registerChannel(commissioner, {
+    leagueId,
+    channelId: humanRoom,
+    memberPubkeys: pubkeys.slice(0, 3),
+    receiptId: "synthetic",
+  });
+  const old = humanPost("before opt-in", Math.floor(Date.now() / 1000) - 5);
+  expect((await ingestHuman([old])).delivered).toBe(0);
+  const configured = await service.configureHumanBroadcast(
+    commissioner,
+    broadcastPolicy(),
+  );
+  const at = Number(configured.policy.effective_after_seconds);
+  expect((await ingestHuman([old])).delivered).toBe(0);
+  expect(
+    (await ingestHuman([humanPost("freshly observed older history", at - 1)]))
+      .delivered,
+  ).toBe(0);
+  const post = humanPost("whole channel", at);
+  const receipts = await Promise.all([
+    ingestHuman([post]),
+    ingestHuman([post], 1),
+  ]);
+  expect(receipts.reduce((n, r) => n + r.delivered, 0)).toBe(2);
+  const jobs = (
+    await f.db.query(
+      "SELECT agent_id,payload FROM runtime_jobs ORDER BY agent_id",
+    )
+  ).rows;
+  expect(jobs.map((j) => j.agent_id)).toEqual(["agent-0", "agent-1"]); // agent-3 is outside this channel
+  expect(
+    jobs.every(
+      (j) =>
+        j.payload.routing === "human-channel-broadcast" &&
+        j.payload.eventId === post.id,
+    ),
+  ).toBe(true);
+  expect(
+    (await f.db.query("SELECT * FROM buzz_inbound_deliveries")).rowCount,
+  ).toBe(2);
+});
+it("SYNTHETIC explicit mentions and replies stay targeted; malformed/unknown targets never broadcast", async () => {
+  const at = Number((await broadcastRoom()).policy.effective_after_seconds);
+  const parent = event("agent parent", {
+    created_at: at,
+    tags: [["h", humanRoom]],
+  });
+  expect((await ingestHuman([parent])).delivered).toBe(0);
+  expect(
+    (await ingestHuman([humanPost("mention", at, [["p", pubkeys[1]!]])]))
+      .delivered,
+  ).toBe(1);
+  expect(
+    (
+      await ingestHuman([
+        humanPost("reply", at, [["e", parent.id, "", "reply"]]),
+      ])
+    ).delivered,
+  ).toBe(1);
+  for (const tags of [
+    [["p", "f".repeat(64)]],
+    [["p"]],
+    [["e", "f".repeat(64), "", "reply"]],
+    [["e"]],
+  ])
+    expect(
+      (await ingestHuman([humanPost(JSON.stringify(tags), at, tags)]))
+        .delivered,
+    ).toBe(0);
+  expect(
+    (
+      await f.db.query("SELECT agent_id FROM runtime_jobs ORDER BY agent_id")
+    ).rows.map((j) => j.agent_id),
+  ).toEqual(["agent-0", "agent-1"]);
+});
+it("SYNTHETIC agent posts, changes, disabled/ACP recipients and stale human ownership cannot broadcast", async () => {
+  const at = Number((await broadcastRoom()).policy.effective_after_seconds);
+  await f.db.query(
+    "UPDATE runtime_agents SET enabled=false WHERE id='agent-1'",
+  );
+  const original = humanPost("one enabled", at);
+  expect((await ingestHuman([original])).delivered).toBe(1);
+  await f.db.query(
+    "UPDATE buzz_ingress_modes SET mode='managed_acp' WHERE agent_id='agent-0'",
+  );
+  expect(
+    (await ingestHuman([humanPost("ACP owns ingress", at)])).delivered,
+  ).toBe(0);
+  expect(
+    (
+      await ingestHuman([
+        event("agent unmentioned", {
+          created_at: at,
+          tags: [["h", humanRoom]],
+        }),
+      ])
+    ).delivered,
+  ).toBe(0);
+  for (const kind of [40003, 9005, 5])
+    expect(
+      (
+        await ingestHuman([
+          event("change" + kind, {
+            pubkey: pubkeys[2],
+            kind,
+            created_at: at,
+            tags: [
+              ["h", humanRoom],
+              ["e", original.id],
+            ],
+          }),
+        ])
+      ).delivered,
+    ).toBe(0);
+  await f.db.query(
+    "UPDATE buzz_ingress_modes SET mode='poll' WHERE agent_id='agent-0'",
+  );
+  await f.db.query(
+    "UPDATE league_teams SET owner_id='replacement-human' WHERE id='team-2'",
+  );
+  expect(
+    (await ingestHuman([humanPost("old human binding", at)])).delivered,
+  ).toBe(0);
+});
+it("SYNTHETIC policy mutation requires commissioner, exact version/private channel, and replay-safe receipts", async () => {
+  await expect(
+    service.configureHumanBroadcast(commissioner, {
+      ...broadcastPolicy(),
+      channelId: room,
+    }),
+  ).rejects.toThrow("private channel");
+  await broadcastRoom();
+  await expect(
+    service.configureHumanBroadcast(owner(2), broadcastPolicy()),
+  ).rejects.toThrow();
+  await expect(
+    service.configureHumanBroadcast(
+      { ...commissioner, leagueId: "other" },
+      broadcastPolicy(),
+    ),
+  ).rejects.toThrow();
+  expect(
+    (await service.configureHumanBroadcast(commissioner, broadcastPolicy()))
+      .replayed,
+  ).toBe(true);
+  await expect(
+    service.configureHumanBroadcast(commissioner, {
+      ...broadcastPolicy(),
+      enabled: false,
+    }),
+  ).rejects.toThrow("idempotency conflict");
+  await expect(
+    service.configureHumanBroadcast(commissioner, {
+      ...broadcastPolicy(),
+      idempotencyKey: "new",
+    }),
+  ).rejects.toThrow("version conflict");
+  const disabled = await service.configureHumanBroadcast(commissioner, {
+    ...broadcastPolicy(),
+    expectedVersion: 1,
+    enabled: false,
+    idempotencyKey: "disable",
+  });
+  expect(
+    (
+      await ingestHuman([
+        humanPost(
+          "disabled policy",
+          Number(disabled.policy.effective_after_seconds),
+        ),
+      ])
+    ).delivered,
+  ).toBe(0);
+  expect(
+    (await f.db.query("SELECT * FROM buzz_human_broadcast_receipts")).rowCount,
+  ).toBe(2);
+});
+
+it("SYNTHETIC explicit scoped polling reads only the registered private channel and skips DM discovery", async () => {
+  await broadcastRoom();
+  const reads: string[] = [];
+  const report = await pollBuzzOnce(
+    service,
+    listener(),
+    async (request) => {
+      reads.push(request.command);
+      if (request.command === "members") {
+        expect(request.channelId).toBe(humanRoom);
+        return pubkeys
+          .slice(0, 3)
+          .map((pubkey) => ({ pubkey, role: "member" }));
+      }
+      if (request.command === "messages") {
+        expect(request.channelId).toBe(humanRoom);
+        return [];
+      }
+      throw Error("Unexpected unscoped request");
+    },
+    { channelIds: [humanRoom] },
+  );
+  expect(report.healthy).toBe(true);
+  expect(reads).toEqual(["members", "messages"]);
+  for (const channelIds of [
+    [],
+    [room],
+    [humanRoom, humanRoom],
+    ["33345678-1234-4234-9234-123456789abc"],
+  ]) {
+    await expect(
+      pollBuzzOnce(
+        service,
+        listener(),
+        async () => {
+          throw Error("Network should not run");
+        },
+        { channelIds },
+      ),
+    ).rejects.toThrow();
+  }
 });

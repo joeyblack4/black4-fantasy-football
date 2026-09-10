@@ -1,3 +1,4 @@
+import { requireCustomHost } from "./host.js";
 import { leagueCapabilities, leagueCapabilityVersion } from "./capabilities.js";
 import { createHash, randomUUID } from "node:crypto";
 import { validateDecision } from "../governance/validation.js";
@@ -118,6 +119,7 @@ export class LeagueService {
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 7044))",
         [command.leagueId],
       );
+      await requireCustomHost(tx, command.leagueId);
       const previous = await tx.query(
         "SELECT payload_hash,response FROM league_command_receipts WHERE league_id=$1 AND actor_id=$2 AND idempotency_key=$3",
         [command.leagueId, verifiedActor.id, command.idempotencyKey],

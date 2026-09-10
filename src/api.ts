@@ -32,6 +32,9 @@ import {
   LeagueError,
 } from "./league/index.js";
 import { RuntimeStore, RuntimeError } from "./runtime/index.js";
+import { NativeSchedules } from "./runtime/native-schedules.js";
+import { seasonInfrastructureHealth } from "./season-health.js";
+import { assertNoConversationSession } from "./runtime/conversation.js";
 import { ScheduleSchema, MessageSchema } from "./runtime/worker.js";
 import {
   GovernanceService,
@@ -39,6 +42,14 @@ import {
 } from "./governance/index.js";
 import { ScoreboardService } from "./scoring/index.js";
 import { DataDispatcher } from "./data/dispatcher.js";
+import { hostBinding } from "./league/host.js";
+import { loadMflAdapter } from "./mfl/service.js";
+import { ManifestRegistry } from "./providers/manifests.js";
+import {
+  MflOwnerActionSchema,
+  MflOwnerReadSchema,
+  MflError,
+} from "./mfl/contracts.js";
 
 async function body(req: IncomingMessage): Promise<unknown> {
   if (!req.headers["content-type"]?.startsWith("application/json"))
@@ -65,8 +76,32 @@ function reply(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(value));
 }
-export function createApiServer(db: Db) {
+export function createApiServer(
+  db: Db,
+  options: { loadMfl?: typeof loadMflAdapter } = {},
+) {
+  const mflLoader = options.loadMfl ?? loadMflAdapter;
+  async function withMfl<T>(
+    actor: Principal,
+    work: (adapter: Awaited<ReturnType<typeof loadMflAdapter>>) => Promise<T>,
+  ) {
+    const lock = await db.connect();
+    try {
+      await lock.query("SELECT pg_advisory_lock(hashtextextended($1,7044))", [
+        actor.leagueId,
+      ]);
+      return await work(
+        await mflLoader(db, actor.leagueId, { leagueLock: lock }),
+      );
+    } finally {
+      await lock.query("SELECT pg_advisory_unlock(hashtextextended($1,7044))", [
+        actor.leagueId,
+      ]);
+      lock.release();
+    }
+  }
   const league = new LeagueService(db),
+    nativeSchedules = new NativeSchedules(db),
     runtime = new RuntimeStore(db),
     governance = new GovernanceService(db),
     scoreboard = new ScoreboardService(db),
@@ -95,6 +130,7 @@ export function createApiServer(db: Db) {
     return row;
   }
   return createServer(async (req, res) => {
+    let releaseMutationLock: (() => Promise<void>) | undefined;
     res.setHeader("cache-control", "no-store");
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("referrer-policy", "no-referrer");
@@ -140,6 +176,158 @@ export function createApiServer(db: Db) {
         return res.end(data);
       }
       const actor = await authenticate(db, req.headers.authorization);
+      // Share the session-transition lock for the whole mutation, including
+      // upstream writes. Opening conversation mode waits for prior requests.
+      if (
+        req.method === "POST" &&
+        !["/v1/football/read", "/v1/football/reconcile"].includes(url.pathname)
+      ) {
+        const lock = await db.connect();
+        releaseMutationLock = async () => {
+          try {
+            await lock.query(
+              "SELECT pg_advisory_unlock_shared(hashtextextended($1,7060))",
+              [actor.leagueId],
+            );
+          } finally {
+            lock.release();
+          }
+        };
+        await lock.query(
+          "SELECT pg_advisory_lock_shared(hashtextextended($1,7060))",
+          [actor.leagueId],
+        );
+        await assertNoConversationSession(lock, actor.leagueId);
+      }
+      if (url.pathname === "/v1/owner/schedules") {
+        if (req.method === "GET")
+          return reply(
+            res,
+            200,
+            await nativeSchedules.read(actor, {
+              id: url.searchParams.get("id") ?? undefined,
+            }),
+          );
+        if (req.method === "POST")
+          return reply(
+            res,
+            200,
+            await nativeSchedules.command(actor, await body(req)),
+          );
+      }
+      if (req.method === "GET" && url.pathname === "/v1/operations/schedules") {
+        requireCommissioner(actor);
+        return reply(res, 200, await nativeSchedules.health(actor.leagueId));
+      }
+      if (req.method === "GET" && url.pathname === "/v1/operations/season") {
+        requireCommissioner(actor);
+        return reply(
+          res,
+          200,
+          await seasonInfrastructureHealth(db, actor.leagueId),
+        );
+      }
+      if (req.method === "GET" && url.pathname === "/v1/football/models") {
+        const registry = new ManifestRegistry(db);
+        const manifests = (
+          await db.query(
+            "SELECT id,agent_id,version,status,document,activated_at FROM provider_manifests WHERE league_id=$1 AND status='active' ORDER BY agent_id",
+            [actor.leagueId],
+          )
+        ).rows;
+        return reply(res, 200, {
+          leagueId: actor.leagueId,
+          observedAt: new Date().toISOString(),
+          models: await Promise.all(
+            manifests.map(async (m) => ({
+              agentId: m.agent_id,
+              version: m.version,
+              activatedAt: m.activated_at,
+              developer: m.document.developer,
+              model: m.document.model,
+              canonicalModel: m.document.canonicalModel ?? null,
+              servingEndpoint: m.document.providerSlug,
+              quantization: m.document.quantization,
+              openWeight: m.document.openWeight,
+              license: m.document.license,
+              harness: m.document.harnessId,
+              harnessVersion: m.document.harnessVersion,
+              buzzBridgeVersion: m.document.buzzBridgeVersion,
+              modelRestriction: await registry.modelRestrictionEvidence(m.id),
+              providerRestriction: await registry.providerRestrictionEvidence(
+                m.id,
+              ),
+            })),
+          ),
+        });
+      }
+      if (req.method === "GET" && url.pathname === "/v1/football/status") {
+        const selected = await hostBinding(db, actor.leagueId);
+        return reply(res, 200, {
+          host: selected.host,
+          version: selected.version,
+          leagueId: actor.leagueId,
+          ...(selected.host === "mfl"
+            ? {
+                mflLeagueId: selected.config.leagueId,
+                season: selected.config.season,
+                skill: "mfl-owner",
+                configurationIsNotRatification: true,
+                publicScoreRedistribution: "not-cleared",
+              }
+            : {}),
+        });
+      }
+      if (
+        req.method === "POST" &&
+        [
+          "/v1/football/read",
+          "/v1/football/commands",
+          "/v1/football/reconcile",
+        ].includes(url.pathname)
+      ) {
+        if (actor.role !== "owner" || !actor.teamId)
+          throw new ApiError(
+            403,
+            "OWNER_REQUIRED",
+            "Use the franchise owner's credential for football tools.",
+          );
+        if (url.pathname.endsWith("/read")) {
+          const query = MflOwnerReadSchema.parse(await body(req));
+          return reply(
+            res,
+            200,
+            await withMfl(actor, (adapter) => adapter.read(actor, query)),
+          );
+        }
+        if (url.pathname.endsWith("/reconcile")) {
+          const input = z
+            .object({ idempotencyKey: z.string().min(1).max(160) })
+            .strict()
+            .parse(await body(req));
+          return reply(
+            res,
+            200,
+            await withMfl(actor, (adapter) =>
+              adapter.reconcile(actor, input.idempotencyKey),
+            ),
+          );
+        }
+        const input = z
+          .object({
+            idempotencyKey: z.string().min(1).max(160),
+            action: MflOwnerActionSchema,
+          })
+          .strict()
+          .parse(await body(req));
+        return reply(
+          res,
+          200,
+          await withMfl(actor, (adapter) =>
+            adapter.execute(actor, input.idempotencyKey, input.action),
+          ),
+        );
+      }
       if (req.method === "GET" && url.pathname === "/v1/me") {
         if (
           actor.role === "owner" &&
@@ -261,6 +449,12 @@ export function createApiServer(db: Db) {
             "USE_GOVERNANCE_ROUTE",
             "Submit human governance through the governance route.",
           );
+        if (input.action.type === "buzz_channel")
+          throw new ApiError(
+            400,
+            "USE_BUZZ_CHANNEL_ROUTE",
+            "Group messages use the authenticated Buzz delivery service.",
+          );
         return reply(
           res,
           200,
@@ -316,12 +510,7 @@ export function createApiServer(db: Db) {
         return reply(res, 200, await governance.execute(actor, command));
       }
       if (req.method === "GET" && url.pathname === "/v1/governance/meetings") {
-        const rows = (
-          await db.query(
-            "SELECT id FROM governance_meetings WHERE league_id=$1 ORDER BY vote_deadline DESC LIMIT 20",
-            [actor.leagueId],
-          )
-        ).rows;
+        const rows = await governance.listMeetings(actor);
         return reply(res, 200, {
           meetings: await Promise.all(
             rows.map((r) => governance.snapshot(actor, r.id)),
@@ -343,6 +532,24 @@ export function createApiServer(db: Db) {
       if (req.method === "GET" && scorePath) {
         const leagueId = decodeURIComponent(scorePath[1]);
         requireLeague(actor, leagueId);
+        if ((await hostBinding(db, leagueId)).host === "mfl") {
+          if (actor.role !== "owner")
+            return reply(res, 200, {
+              host: "mfl",
+              scores: null,
+              status: "USE_MFL_OWNER_TOOLS",
+            });
+          return reply(
+            res,
+            200,
+            await withMfl(actor, (adapter) =>
+              adapter.read(actor, {
+                type: "scores",
+                week: Number(scorePath[2]),
+              }),
+            ),
+          );
+        }
         return reply(
           res,
           200,
@@ -371,6 +578,16 @@ export function createApiServer(db: Db) {
       if (req.method === "GET" && statePath) {
         const leagueId = decodeURIComponent(statePath[1]);
         requireLeague(actor, leagueId);
+        const selected = await hostBinding(db, leagueId);
+        if (selected.host === "mfl")
+          return reply(res, 200, {
+            host: "mfl",
+            version: selected.version,
+            leagueId,
+            mflLeagueId: selected.config.leagueId,
+            status: "USE_MFL_OWNER_TOOLS",
+            customEngineAuthoritative: false,
+          });
         return reply(res, 200, await league.snapshot(leagueId, actor));
       }
       const agentPath = url.pathname.match(
@@ -381,6 +598,30 @@ export function createApiServer(db: Db) {
         await binding(actor, agentId, req.method === "POST");
         if (req.method === "GET" && !agentPath[2])
           return reply(res, 200, await runtime.agentSnapshot(agentId));
+        if (
+          req.method === "POST" &&
+          agentPath[2] === "appointments" &&
+          (await hostBinding(db, actor.leagueId)).host === "mfl"
+        ) {
+          const input = ScheduleSchema.parse(await body(req));
+          return reply(
+            res,
+            200,
+            await nativeSchedules.command(actor, {
+              operation: "create",
+              idempotencyKey: input.causalId,
+              label:
+                typeof input.payload.label === "string"
+                  ? input.payload.label
+                  : "Owner appointment",
+              prompt:
+                typeof input.payload.prompt === "string"
+                  ? input.payload.prompt
+                  : JSON.stringify(input.payload),
+              timing: { kind: "once", at: input.dueAt },
+            }),
+          );
+        }
         if (req.method === "POST" && agentPath[2] === "appointments")
           return reply(
             res,
@@ -439,12 +680,24 @@ export function createApiServer(db: Db) {
               )
             ).rows[0].n,
           ),
-          league: await league.snapshot(actor.leagueId, actor),
+          league:
+            (await hostBinding(db, actor.leagueId)).host === "mfl"
+              ? {
+                  host: "mfl",
+                  status: "USE_MFL_OWNER_TOOLS",
+                  customEngineAuthoritative: false,
+                }
+              : await league.snapshot(actor.leagueId, actor),
           runtime: value,
         });
       }
       throw new ApiError(404, "NOT_FOUND", "Route does not exist.");
     } catch (error) {
+      if (error instanceof MflError)
+        return reply(res, error.code === "MFL_AUTH_REQUIRED" ? 503 : 409, {
+          error: error.code,
+          ...(error.details ? { details: error.details } : {}),
+        });
       if (error instanceof z.ZodError)
         return reply(res, 400, {
           error: "INVALID_REQUEST",
@@ -485,6 +738,8 @@ export function createApiServer(db: Db) {
         message:
           "Request failed; no success receipt was returned. Retry only with the same idempotency key.",
       });
+    } finally {
+      await releaseMutationLock?.();
     }
   });
 }

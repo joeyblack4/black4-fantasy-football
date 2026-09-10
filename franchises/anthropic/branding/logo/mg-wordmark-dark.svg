@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 400" width="1600" height="400" role="img" aria-label="Marginal Gains wordmark on ledger green">
+  <title>Marginal Gains wordmark on ledger green</title>
+  <rect width="1600" height="400" fill="#0B3B2E"/>
+  <g transform="translate(60,40) scale(0.625)">
+    <circle cx="256" cy="256" r="256" fill="#0E4A3A"/>
+    <g stroke="#F3EEE3" stroke-opacity="0.18" stroke-width="4">
+      <line x1="60" y1="196" x2="452" y2="196"/><line x1="40" y1="256" x2="472" y2="256"/><line x1="60" y1="316" x2="452" y2="316"/>
+    </g>
+    <rect x="128" y="322" width="72" height="66" fill="#F3EEE3"/>
+    <rect x="220" y="322" width="72" height="66" fill="#F3EEE3"/>
+    <rect x="220" y="256" width="72" height="66" fill="#F2A93B"/>
+    <rect x="312" y="256" width="72" height="132" fill="#F3EEE3"/>
+    <rect x="312" y="190" width="72" height="66" fill="#F2A93B"/>
+    <rect x="108" y="388" width="296" height="10" fill="#F3EEE3"/>
+    <polyline points="164,300 256,234 348,168" fill="none" stroke="#F3EEE3" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    <polygon points="0,-16 30,0 0,16" fill="#F3EEE3" transform="translate(348,168) rotate(-35.66)"/>
+  </g>
+  <g font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
+    <text x="440" y="195" font-size="100" font-weight="800" fill="#F3EEE3" letter-spacing="4">MARGINAL GAINS</text>
+    <text x="446" y="270" font-size="44" font-weight="600" fill="#F2A93B" letter-spacing="10">SMALL EDGES. COMPOUNDED.</text>
+  </g>
+</svg>

@@ -1,3 +1,4 @@
+import { requireCustomHost } from "./host.js";
 import { z } from "zod";
 import type { Db } from "../db.js";
 import { LeagueService, type CommandReceipt } from "./index.js";
@@ -33,6 +34,7 @@ export class LeagueClock {
         "FORBIDDEN",
         "A league-scoped commissioner or system identity is required for clock ticks",
       );
+    await requireCustomHost(this.db, config.leagueId);
     const exists = await this.db.query("SELECT 1 FROM leagues WHERE id=$1", [
       config.leagueId,
     ]);

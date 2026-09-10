@@ -10,3 +10,12 @@ coverage/
 test-results/
 .playwright-cli/
 output/playwright/
+
+# One-off deployment, provider-access, and live readback artifacts.
+# Durable implementations and sanitized evidence belong in src/, scripts/,
+# docs/, tests/, and evidence/; this working area remains local-only.
+work/
+
+# Native owners' private research, memory and working files (visible in Finder).
+# Public, approved branding lives beside workspace/ and remains trackable.
+franchises/*/workspace/

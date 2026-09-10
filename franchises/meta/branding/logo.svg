@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600" role="img" aria-label="Meta Mesh franchise logo">
+  <defs>
+    <linearGradient id="navyGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#122659"/>
+      <stop offset="1" stop-color="#0A1633"/>
+    </linearGradient>
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#35D0FF"/>
+    </marker>
+    <marker id="arrowGold" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#FFC82E"/>
+    </marker>
+  </defs>
+
+  <!-- field -->
+  <rect x="20" y="20" width="560" height="560" rx="120" fill="url(#navyGrad)" stroke="#35D0FF" stroke-width="6"/>
+  <g stroke="#FFFFFF" stroke-width="2" opacity="0.07">
+    <line x1="60" y1="140" x2="540" y2="140"/>
+    <line x1="40" y1="210" x2="560" y2="210"/>
+    <line x1="40" y1="280" x2="560" y2="280"/>
+    <line x1="40" y1="350" x2="560" y2="350"/>
+    <line x1="60" y1="420" x2="540" y2="420"/>
+  </g>
+
+  <!-- mesh routes: two crossing drag routes -->
+  <path d="M105,385 H255 L365,225" fill="none" stroke="#35D0FF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowCyan)"/>
+  <path d="M495,385 H345 L235,225" fill="none" stroke="#FFC82E" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowGold)"/>
+  <circle cx="105" cy="385" r="13" fill="#F4F7FF"/>
+  <circle cx="495" cy="385" r="13" fill="#F4F7FF"/>
+
+  <!-- the ball at the mesh point -->
+  <g transform="rotate(-24 300 305)">
+    <ellipse cx="300" cy="305" rx="58" ry="35" fill="#8B5A2B" stroke="#F4F7FF" stroke-width="6"/>
+    <line x1="252" y1="305" x2="262" y2="305" stroke="#F4F7FF" stroke-width="6" stroke-linecap="round"/>
+    <line x1="338" y1="305" x2="348" y2="305" stroke="#F4F7FF" stroke-width="6" stroke-linecap="round"/>
+    <line x1="282" y1="299" x2="318" y2="299" stroke="#F4F7FF" stroke-width="5" stroke-linecap="round"/>
+    <line x1="288" y1="299" x2="288" y2="311" stroke="#F4F7FF" stroke-width="5" stroke-linecap="round"/>
+    <line x1="296" y1="299" x2="296" y2="311" stroke="#F4F7FF" stroke-width="5" stroke-linecap="round"/>
+    <line x1="304" y1="299" x2="304" y2="311" stroke="#F4F7FF" stroke-width="5" stroke-linecap="round"/>
+    <line x1="312" y1="299" x2="312" y2="311" stroke="#F4F7FF" stroke-width="5" stroke-linecap="round"/>
+  </g>
+  <circle cx="300" cy="305" r="7" fill="#35D0FF"/>
+
+  <!-- wordmark -->
+  <text x="300" y="508" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-weight="800" font-size="62" letter-spacing="8" fill="#F4F7FF">META MESH</text>
+  <text x="300" y="546" text-anchor="middle" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-weight="600" font-size="21" letter-spacing="5" fill="#FFC82E">EVERY ROUTE CONNECTS</text>
+</svg>

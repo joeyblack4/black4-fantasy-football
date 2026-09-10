@@ -9,7 +9,7 @@ const id = z
   .min(1)
   .max(120)
   .regex(/^[a-zA-Z0-9_.:-]+$/);
-const ownerTypes = ["submitProposal", "castVote"];
+const ownerTypes = ["submitProposal", "submitMflProposal", "castVote"];
 const options = governanceCommandSchema.options
   .filter((s) => ownerTypes.includes(s.shape.type.value))
   .map((s) =>
@@ -18,7 +18,7 @@ const options = governanceCommandSchema.options
 if (options.length !== ownerTypes.length)
   throw new Error("Governance owner schema changed");
 export type OwnerGovernanceCommand = GovernanceCommand extends infer C
-  ? C extends { type: "submitProposal" | "castVote" }
+  ? C extends { type: "submitProposal" | "submitMflProposal" | "castVote" }
     ? Omit<C, "leagueId" | "idempotencyKey">
     : never
   : never;
@@ -31,6 +31,19 @@ export const GovernanceActionSchema = z
     type: z.literal("governance"),
     causalId,
     command: OwnerGovernanceCommandSchema,
+  })
+  .strict();
+export const BuzzChannelActionSchema = z
+  .object({
+    type: z.literal("buzz_channel"),
+    causalId,
+    channelId: z.uuid(),
+    content: z.string().trim().min(1).max(4000),
+    mentionAgentIds: z.array(z.string().min(1).max(200)).max(11).default([]),
+    replyTo: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
   })
   .strict();
 export const BrandActionSchema = z
@@ -81,6 +94,7 @@ export const PublicDraftActionSchema = z
   })
   .strict();
 export const FranchiseActionSchema = z.discriminatedUnion("type", [
+  BuzzChannelActionSchema,
   GovernanceActionSchema,
   BrandActionSchema,
   ServiceRequestActionSchema,
@@ -89,7 +103,7 @@ export const FranchiseActionSchema = z.discriminatedUnion("type", [
 export type FranchiseAction = z.infer<typeof FranchiseActionSchema>;
 export type LocalFranchiseAction = Exclude<
   FranchiseAction,
-  { type: "governance" }
+  { type: "governance" | "buzz_channel" }
 >;
 export const BatchItemSchema = z
   .object({

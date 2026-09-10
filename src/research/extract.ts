@@ -43,6 +43,8 @@ export function extractDocument(
   source: ResearchSource,
   response: HttpDocument,
   sources: readonly ResearchSource[],
+  validateLink: (input: string) => unknown = (input) =>
+    permittedUrl(input, sources),
 ): ResearchDocument {
   if (response.status !== 200)
     throw new ResearchError(
@@ -102,7 +104,7 @@ export function extractDocument(
     if (links.length >= 5) break;
     try {
       const target = new URL(decode(match[1]), url);
-      permittedUrl(target.href, sources);
+      validateLink(target.href);
       if (target.href === url.href || links.some((l) => l.url === target.href))
         continue;
       const text = plain(match[2]).split(/\s+/).slice(0, 10).join(" ");

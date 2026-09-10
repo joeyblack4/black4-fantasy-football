@@ -1,0 +1,23 @@
+{
+  "brand": "House of Mavis",
+  "team_name": "Mavis & Co.",
+  "scheme_version": "v1",
+  "colors": {
+    "indigo":  { "hex": "#1A1B4B", "role": "primary",   "meaning": "atelier / studio depth" },
+    "coral":   { "hex": "#FF5C5C", "role": "accent",    "meaning": "telegraph signal / decisive call" },
+    "bone":    { "hex": "#F5F1E8", "role": "surface",   "meaning": "drafting paper / clarity" },
+    "graphite":{ "hex": "#0B0C24", "role": "ink",       "meaning": "outline / monogram contrast" },
+    "violet":  { "hex": "#252774", "role": "highlight", "meaning": "gradient midpoint" }
+  },
+  "typography": {
+    "display": { "family": "Georgia, 'Times New Roman', serif", "use": "wordmark, strap, body intro" },
+    "mono":    { "family": "ui-monospace, 'JetBrains Mono', Menlo, monospace", "use": "receipts, stats, citations" }
+  },
+  "motifs": [
+    "shield with dashed coral inner ring (football arc + workshop plate)",
+    "arched wordmark across the crest",
+    "serif M monogram with coral underline tick",
+    "EST 2026 strap",
+    "twin coral stars flanking the shield"
+  ]
+}

@@ -1,6 +1,104 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "../db.js";
 export const GUARDRAIL_MAX_AGE_MS = 3600000;
+export const SINGLE_PROVIDER_LIMITATION =
+  "Independent wrong-provider denial is not testable against the currently advertised endpoints. Exact provider policy and local routing are verified; a live rejection by an independent serving endpoint is not claimed.";
+export const MODEL_CONTROL_GAP_LIMITATION =
+  "Upstream wrong-model rejection was not independently tested: no callable alternate model was found on the exact moonshotai/mxfp4 endpoint in the bounded Moonshot catalog search. The operator accepts exact key/model/provider policy, a real correct-model/tool canary, and executable local pin and wrong-return rejection checks instead. This is weaker upstream test coverage, not an equivalent live denial.";
+export function singleServingBranch(
+  assigned: string,
+  activeTags: unknown,
+): boolean {
+  return (
+    Array.isArray(activeTags) &&
+    activeTags.length > 0 &&
+    activeTags.includes(assigned) &&
+    new Set(activeTags).size === activeTags.length &&
+    activeTags.every(
+      (t) =>
+        typeof t === "string" &&
+        (t === assigned || assigned.startsWith(t + "/")),
+    )
+  );
+}
+/** Empirical authenticated routing diagnostics, not a documented provider error-code contract.
+ * One eligible input endpoint must be eliminated by exactly the tested guardrail dimension. */
+export function empiricalRoutingRejection(
+  body: any,
+  kind: "wrong_model" | "wrong_provider",
+) {
+  const reason =
+    kind === "wrong_model"
+      ? "model-ignored-by-guardrail"
+      : "provider-not-allowed-by-guardrail";
+  const metadata = body.error?.metadata;
+  return (
+    body.httpStatus === 404 &&
+    body.error?.code === 404 &&
+    body.responseComplete === true &&
+    body.hasGeneration === false &&
+    body.hasChoices === false &&
+    metadata?.failed_routing_step === "Filter by Guardrails" &&
+    metadata.input_endpoint_count === 1 &&
+    Array.isArray(metadata.ineligibility_reasons) &&
+    metadata.ineligibility_reasons.length === 1 &&
+    metadata.ineligibility_reasons[0]?.reason === reason &&
+    metadata.ineligibility_reasons[0]?.endpoint_count === 1 &&
+    !/authentication|unauthorized|quota|budget|insufficient credits|rate.limit|provider.unavailable|timed.out/i.test(
+      String(body.error?.message ?? ""),
+    )
+  );
+}
+/** Read-only accounting proof: either settled zero, or the entire uncertain reservation still
+ * contributes to the wallet hold. Never releases funds or claims an unobserved zero charge. */
+export async function negativeChargeProtection(
+  db: Pick<Db, "query">,
+  body: any,
+  agentId: string,
+  allowHeld: boolean,
+  allowObservedCost = false,
+) {
+  const r = (
+    await db.query(
+      `SELECT r.*,a.reserved_micros,
+    (SELECT COALESCE(sum(amount_micros),0) FROM runtime_reservations x WHERE x.agent_id=r.agent_id AND x.status IN ('reserved','uncertain')) AS outstanding_micros
+    FROM runtime_reservations r JOIN runtime_agents a ON a.id=r.agent_id WHERE r.id=$1`,
+      [body.reservationId],
+    )
+  ).rows[0];
+  if (!r || r.agent_id !== agentId || r.job_id !== body.jobId) return null;
+  if (
+    r.status === "settled" &&
+    r.actual_micros !== null &&
+    Number(r.actual_micros) === 0 &&
+    (r.observed_micros === null || Number(r.observed_micros) === 0)
+  )
+    return {
+      chargeProtected: true,
+      costKnownZero: true,
+      budgetProtection: "settled_zero" as const,
+    };
+  if (
+    allowHeld &&
+    r.status === "uncertain" &&
+    r.actual_micros === null &&
+    (r.observed_micros === null ||
+      Number(r.observed_micros) === 0 ||
+      (allowObservedCost &&
+        BigInt(r.observed_micros) >= 0n &&
+        BigInt(r.observed_micros) <= BigInt(r.amount_micros))) &&
+    Number.isSafeInteger(body.reservationMicros) &&
+    body.reservationMicros > 0 &&
+    BigInt(r.amount_micros) === BigInt(body.reservationMicros) &&
+    BigInt(r.reserved_micros) >= BigInt(r.outstanding_micros)
+  )
+    return {
+      chargeProtected: true,
+      costKnownZero: false,
+      budgetProtection: "full_uncertain_reservation_held" as const,
+    };
+  return null;
+}
 export function evidenceHash(value: unknown): string {
   const ordered = (v: any): any =>
     Array.isArray(v)

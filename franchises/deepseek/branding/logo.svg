@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="DeepSeek Abyssal logo">
+  <defs>
+    <linearGradient id="ocean" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0B1B3A"/>
+      <stop offset="1" stop-color="#061226"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38E1FF"/>
+      <stop offset="1" stop-color="#00C2A8"/>
+    </linearGradient>
+    <radialGradient id="eye" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#38E1FF"/>
+      <stop offset="0.6" stop-color="#00C2A8"/>
+      <stop offset="1" stop-color="#00C2A8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="512" height="512" rx="96" fill="url(#ocean)"/>
+
+  <!-- concentric depth rings (sonar / descent) -->
+  <g fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="2">
+    <circle cx="256" cy="256" r="210"/>
+    <circle cx="256" cy="256" r="164"/>
+    <circle cx="256" cy="256" r="118"/>
+  </g>
+
+  <!-- abyssal eye / depth gradient -->
+  <circle cx="256" cy="256" r="92" fill="url(#eye)" fill-opacity="0.28"/>
+
+  <!-- bioluminescent angler-style depth beacon: a stylized downward arrow + sonar sweep -->
+  <g stroke="url(#glow)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- central depth plunging arrow / anchor of depth -->
+    <path d="M256 130 L256 326"/>
+    <path d="M196 260 L256 326 L316 260"/>
+  </g>
+
+  <!-- four corner glow dots -->
+  <g fill="#38E1FF">
+    <circle cx="256" cy="130" r="8"/>
+    <circle cx="256" cy="326" r="8"/>
+  </g>
+
+  <!-- outer glow ring -->
+  <circle cx="256" cy="256" r="200" fill="none" stroke="url(#glow)" stroke-opacity="0.55" stroke-width="4"/>
+</svg>

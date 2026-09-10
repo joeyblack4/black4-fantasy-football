@@ -4,6 +4,7 @@ import { transaction, type Db } from "../db.js";
 import type { Principal } from "../auth.js";
 import { ScoreboardService } from "../scoring/index.js";
 import { fingerprint } from "../franchise/service.js";
+import { hostBinding } from "../league/host.js";
 export const publicScope = {
   version: "2026-09-07.v2",
   fields: [
@@ -55,6 +56,9 @@ export class PublicProjection {
       )
     ).rows[0];
     if (!release) return { status: "not-released" };
+    // This projection consumes the custom engine. Never relabel its local fixtures as MFL results.
+    if ((await hostBinding(this.db, leagueId)).host === "mfl")
+      throw Error("MFL_PUBLIC_PROJECTION_NOT_ENABLED");
     if (release.scope_hash !== publicScopeHash)
       throw Error("PUBLIC_SCOPE_CHANGED_REAPPROVAL_REQUIRED");
     let scores: unknown = null;

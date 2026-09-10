@@ -30,9 +30,27 @@ const services = {
     once: true,
     permission: "--allow-paid-inference",
   },
+  conversation: {
+    script: "scripts/live-worker.ts",
+    args: ["--live", "--conversation"],
+    once: true,
+    permission: "--allow-paid-inference",
+  },
+  "buzz-conversation-listener": {
+    script: "scripts/buzz-conversation-listener.ts",
+    args: ["--execute"],
+    once: true,
+    permission: "--allow-buzz-reads",
+  },
   "buzz-listener": {
     script: "scripts/buzz-listener.ts",
     args: ["--execute-listener"],
+    once: true,
+    permission: "--allow-buzz-reads",
+  },
+  "buzz-managed-listener": {
+    script: "scripts/buzz-managed-listener.ts",
+    args: ["--execute"],
     once: true,
     permission: "--allow-buzz-reads",
   },
@@ -90,6 +108,14 @@ const publicKeys = new Set([
   "FOOTBALL_TARIFF_FILE",
   "FOOTBALL_TURN_RESERVATION_MICROS",
   "FOOTBALL_MAX_OUTPUT_TOKENS",
+  "FOOTBALL_REASONING_EFFORT",
+  "FOOTBALL_HARNESS_PATCH_RECEIPT",
+  "FOOTBALL_CONVERSATION_SESSION_ID",
+  "FOOTBALL_CONVERSATION_LISTENER_AGENT_ID",
+  "FOOTBALL_FIRECRAWL_CONFIG_FILE",
+  "FOOTBALL_BUZZ_CHANNEL_SENDS_ENABLED",
+  "FOOTBALL_MFL_CONFIG_FILE",
+  "MFL_SESSION_FILE",
   "FOOTBALL_PUBLIC_PORT",
   "FOOTBALL_X_PUBLISHING_ENABLED",
   "B4_LEAGUE_BUZZ_EXECUTABLE",
@@ -169,7 +195,9 @@ const serviceSecretKeys =
       ? ["DATABASE_URL", "FOOTBALL_X_USER_ACCESS_TOKEN"]
       : ["DATABASE_URL"];
 if (
-  !["live", "billing-reconcile", "buzz-listener"].includes(mode) &&
+  !["live", "conversation", "billing-reconcile", "buzz-listener"].includes(
+    mode,
+  ) &&
   Object.keys(secretFiles).some((key) => !serviceSecretKeys.includes(key))
 )
   throw new Error("Secret reference is outside this service scope");
@@ -183,7 +211,13 @@ if (mode === "buzz-listener") {
   args.push("--config", config.serviceConfig);
 } else if (config.serviceConfig !== undefined)
   throw new Error("serviceConfig is only used by buzz-listener");
-if (mode === "buzz-outbound") {
+if (
+  [
+    "buzz-outbound",
+    "buzz-managed-listener",
+    "buzz-conversation-listener",
+  ].includes(mode)
+) {
   if (
     !env.FOOTBALL_LEAGUE_ID ||
     !env.B4_LEAGUE_BUZZ_EXECUTABLE ||
@@ -194,9 +228,45 @@ if (mode === "buzz-outbound") {
     );
   args.push("--league", env.FOOTBALL_LEAGUE_ID);
 }
+if (["conversation", "buzz-conversation-listener"].includes(mode)) {
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      env.FOOTBALL_CONVERSATION_SESSION_ID ?? "",
+    )
+  )
+    throw new Error("Explicit conversation session UUID required");
+  if (
+    mode === "conversation" &&
+    env.FOOTBALL_BUZZ_CHANNEL_SENDS_ENABLED !== "true"
+  )
+    throw new Error("Conversation requires its scoped Buzz reply transport");
+  if (mode === "buzz-conversation-listener") {
+    if (
+      !/^b4-[a-z0-9-]{1,100}$/.test(
+        env.FOOTBALL_CONVERSATION_LISTENER_AGENT_ID ?? "",
+      )
+    )
+      throw new Error("Exact managed conversation listener identity required");
+    args.push(
+      "--session",
+      env.FOOTBALL_CONVERSATION_SESSION_ID,
+      "--agent",
+      env.FOOTBALL_CONVERSATION_LISTENER_AGENT_ID,
+    );
+  }
+} else if (
+  env.FOOTBALL_CONVERSATION_SESSION_ID ||
+  env.FOOTBALL_CONVERSATION_LISTENER_AGENT_ID
+)
+  throw new Error(
+    "Conversation settings require a dedicated conversation service",
+  );
 if (!["api", "synthetic"].includes(mode) && !env.FOOTBALL_LEAGUE_ID)
   throw new Error("Explicit league binding required");
-if (["live", "billing-reconcile"].includes(mode) && !env.FOOTBALL_MANIFEST_ID)
+if (
+  ["live", "conversation", "billing-reconcile"].includes(mode) &&
+  !env.FOOTBALL_MANIFEST_ID
+)
   throw new Error("Exact manifest ID required");
 if (mode === "public-feed" && !secretFiles.FOOTBALL_PUBLIC_DATABASE_URL)
   throw new Error("SELECT-only public DB secret file required");
@@ -227,7 +297,13 @@ if (
   );
 if (flags.has("--once") && !service.oneShot) args.push("--once");
 const oneShot = flags.has("--once") || (service.oneShot && !repeat);
-const permissionMissing = service.permission && !flags.has(service.permission);
+const buzzSendPermissionMissing =
+  ["live", "conversation"].includes(mode) &&
+  env.FOOTBALL_BUZZ_CHANNEL_SENDS_ENABLED === "true" &&
+  !flags.has("--allow-buzz-sends");
+const permissionMissing =
+  (service.permission && !flags.has(service.permission)) ||
+  buzzSendPermissionMissing;
 if (flags.has("--print-plan")) {
   console.log(
     JSON.stringify(
@@ -240,6 +316,9 @@ if (flags.has("--print-plan")) {
             ? { type: "one-shot-no-retry" }
             : { type: "continuous-exit-restart", maximumDelayMs: 60000 },
         requiredFlag: service.permission ?? null,
+        buzzSendFlagRequired:
+          ["live", "conversation"].includes(mode) &&
+          env.FOOTBALL_BUZZ_CHANNEL_SENDS_ENABLED === "true",
         requiredFlagPresent: !permissionMissing,
         environmentKeys: Object.keys(env).sort(),
         secretReferences: Object.keys(secretFiles).sort(),
@@ -254,6 +333,10 @@ if (flags.has("--print-plan")) {
   );
   process.exit(0);
 }
+if (buzzSendPermissionMissing)
+  throw new Error(
+    "Native league channel sends require explicit --allow-buzz-sends",
+  );
 if (permissionMissing)
   throw new Error(`Service requires explicit ${service.permission}`);
 if (

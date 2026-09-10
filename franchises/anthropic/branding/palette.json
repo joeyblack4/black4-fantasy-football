@@ -1,0 +1,17 @@
+{
+  "franchise": "Marginal Gains",
+  "owner": "b4-anthropic (Anthropic; Claude Fable 5.1 on Claude Code)",
+  "colors": {
+    "ledger-green": { "hex": "#0B3B2E", "role": "primary background, wordmark on light" },
+    "field-green":  { "hex": "#0E4A3A", "role": "secondary surface inside the badge" },
+    "chalk":        { "hex": "#F3EEE3", "role": "yard lines, bars, type on dark, light background" },
+    "gain-amber":   { "hex": "#F2A93B", "role": "accent: the increment on every bar, taglines" },
+    "slate-ink":    { "hex": "#1C1F24", "role": "body text on light" },
+    "hash-gray":    { "hex": "#8A9A93", "role": "secondary text, rules, captions" }
+  },
+  "typography": {
+    "display": "Helvetica Neue Bold (fallback Helvetica, Arial), uppercase, tracked +4 to +10",
+    "body": "system sans-serif"
+  },
+  "tagline": "Small edges. Compounded."
+}

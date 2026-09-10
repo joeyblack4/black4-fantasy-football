@@ -7,7 +7,14 @@ import {
   readGuardrailArtifact,
   evidenceHash,
   GUARDRAIL_MAX_AGE_MS,
+  empiricalRoutingRejection,
+  negativeChargeProtection,
+  singleServingBranch,
+  SINGLE_PROVIDER_LIMITATION,
+  MODEL_CONTROL_GAP_LIMITATION,
+  guardrailTimestampFresh,
 } from "./guardrail-evidence.js";
+import { routingDriverHash } from "./guardrail-local-proof.js";
 import { KnownZeroCostError } from "../runtime/worker.js";
 
 export const ManifestSchema = z
@@ -295,10 +302,127 @@ export class ManifestRegistry {
             throw Error("MANIFEST_GUARDRAIL_EVIDENCE_INVALID");
         } else {
           const e = artifact.body;
+          if (e.evidenceBasis === "operator_accepted_kimi_model_control_gap") {
+            if (
+              check.check_kind !== "wrong_model" ||
+              e.kind !== "wrong_model" ||
+              e.manifestId !== id ||
+              e.keyHash !== m.document.upstreamKeyHash ||
+              e.guardrailId !== m.document.guardrailId ||
+              m.document.model !== "moonshotai/kimi-k3" ||
+              m.document.providerSlug !== "moonshotai/mxfp4" ||
+              e.model !== m.document.model ||
+              e.providerSlug !== m.document.providerSlug ||
+              e.independentLiveProbePassed !== false ||
+              e.limitation !== MODEL_CONTROL_GAP_LIMITATION ||
+              e.catalog?.sourceUrl !== "https://openrouter.ai/api/v1/models" ||
+              !Array.isArray(e.catalog?.searches) ||
+              e.catalog.searches.length < 1 ||
+              e.catalog.searches.length > 30 ||
+              !e.catalog.searches.every(
+                (r: any) =>
+                  r.model?.startsWith("moonshotai/") &&
+                  r.matchingCallableEndpoints === 0 &&
+                  r.sourceUrl ===
+                    "https://openrouter.ai/api/v1/models/" +
+                      r.model +
+                      "/endpoints" &&
+                  /^[a-f0-9]{64}$/.test(r.responseHash ?? ""),
+              ) ||
+              !(await guardrailTimestampFresh(
+                tx,
+                e.catalog.observedAt,
+                3600000,
+              )) ||
+              e.localProof?.driverHash !== (await routingDriverHash()) ||
+              e.localProof?.model !== m.document.model ||
+              e.localProof?.providerSlug !== m.document.providerSlug ||
+              e.localProof?.exactRequestPin !== true ||
+              e.localProof?.wrongProviderRejected !== true ||
+              e.localProof?.wrongModelRejected !== true ||
+              e.localProof?.syntheticTransport !== true ||
+              e.localProof?.networkCalls !== 0 ||
+              !Array.isArray(e.inspectionArtifactIds) ||
+              e.inspectionArtifactIds.length !== 2 ||
+              !checks
+                .filter(
+                  (c) =>
+                    c.check_kind === "assignment" ||
+                    c.check_kind === "key_limit",
+                )
+                .every((c) =>
+                  e.inspectionArtifactIds.includes(c.evidence.artifactId),
+                )
+            )
+              throw Error("MANIFEST_MODEL_CONTROL_GAP_INVALID");
+            const positive = await tx.query(
+              `SELECT 1 FROM provider_calls c JOIN runtime_jobs j ON j.id=c.job_id WHERE c.id=$1 AND c.manifest_id=$2 AND c.job_id=$3 AND c.status='verified' AND c.reconciliation_status='verified' AND c.purpose='canary' AND c.staff_role IS DISTINCT FROM 'guardrail-probe' AND c.generation_id IS NOT NULL AND c.cost_micros IS NOT NULL AND c.reported_model=ANY($4::text[]) AND c.reported_provider=ANY($5::text[]) AND j.status='completed' AND j.execution_mode='provider_canary' AND c.completed_at>clock_timestamp()-interval '1 hour' AND EXISTS(SELECT 1 FROM runtime_receipts r WHERE r.agent_id=c.agent_id AND r.type='provider_diagnostic' AND r.details->>'kind'='canary_read_tool' AND r.details->>'tool'='research_sources' AND r.details->>'executed'='true' AND r.created_at BETWEEN (SELECT min(started_at) FROM provider_calls WHERE job_id=c.job_id) AND c.completed_at)`,
+              [
+                e.positiveCallId,
+                id,
+                e.positiveJobId,
+                [m.document.model, m.document.canonicalModel].filter(Boolean),
+                m.document.reportedProviderNames,
+              ],
+            );
+            if (!positive.rowCount)
+              throw Error("MANIFEST_MODEL_TOOL_CANARY_REQUIRED");
+            continue;
+          }
+          if (
+            e.evidenceBasis === "single_serving_branch_policy_and_local_pin"
+          ) {
+            if (
+              check.check_kind !== "wrong_provider" ||
+              e.kind !== "wrong_provider" ||
+              e.manifestId !== id ||
+              e.keyHash !== m.document.upstreamKeyHash ||
+              e.guardrailId !== m.document.guardrailId ||
+              e.model !== m.document.model ||
+              e.providerSlug !== m.document.providerSlug ||
+              e.independentLiveProbePassed !== false ||
+              e.limitation !== SINGLE_PROVIDER_LIMITATION ||
+              !singleServingBranch(
+                m.document.providerSlug,
+                e.catalog?.activeTags,
+              ) ||
+              e.catalog?.sourceUrl !==
+                "https://openrouter.ai/api/v1/models/" +
+                  m.document.model +
+                  "/endpoints" ||
+              !/^[a-f0-9]{64}$/.test(e.catalog?.responseHash ?? "") ||
+              !(await guardrailTimestampFresh(
+                tx,
+                e.catalog.observedAt,
+                3600000,
+              )) ||
+              e.localProof?.driverHash !== (await routingDriverHash()) ||
+              e.localProof?.model !== m.document.model ||
+              e.localProof?.providerSlug !== m.document.providerSlug ||
+              e.localProof?.exactRequestPin !== true ||
+              e.localProof?.wrongProviderRejected !== true ||
+              e.localProof?.wrongModelRejected !== true ||
+              e.localProof?.syntheticTransport !== true ||
+              e.localProof?.networkCalls !== 0 ||
+              !Array.isArray(e.inspectionArtifactIds) ||
+              e.inspectionArtifactIds.length !== 2 ||
+              !checks
+                .filter(
+                  (c) =>
+                    c.check_kind === "assignment" ||
+                    c.check_kind === "key_limit",
+                )
+                .every((c) =>
+                  e.inspectionArtifactIds.includes(c.evidence.artifactId),
+                )
+            )
+              throw Error("MANIFEST_SINGLE_PROVIDER_ASSURANCE_INVALID");
+            continue;
+          }
           if (
             e.kind !== check.check_kind ||
             !e.restrictionVerified ||
-            !e.costKnownZero
+            (!e.costKnownZero && !e.chargeProtected)
           )
             throw Error("MANIFEST_GUARDRAIL_EVIDENCE_INVALID");
           const capture = await readGuardrailArtifact(
@@ -320,7 +444,7 @@ export class ManifestRegistry {
           )
             throw Error("MANIFEST_GUARDRAIL_EVIDENCE_INVALID");
           const linked = await tx.query(
-            `SELECT 1 FROM provider_calls c JOIN runtime_reservations r ON r.id=$3 AND r.job_id=c.job_id AND r.agent_id=c.agent_id WHERE c.id=$1 AND c.manifest_id=$2 AND c.staff_role='guardrail-probe' AND c.generation_id IS NULL AND c.requested_model=$4 AND c.requested_provider=$5 AND r.status='settled' AND r.actual_micros=0`,
+            `SELECT 1 FROM provider_calls c JOIN runtime_reservations r ON r.id=$3 AND r.job_id=c.job_id AND r.agent_id=c.agent_id WHERE c.id=$1 AND c.manifest_id=$2 AND c.staff_role='guardrail-probe' AND c.generation_id IS NULL AND c.requested_model=$4 AND c.requested_provider=$5 AND (c.cost_micros IS NULL OR c.cost_micros=0)`,
             [
               e.callId,
               id,
@@ -331,6 +455,19 @@ export class ManifestRegistry {
           );
           if (!linked.rowCount)
             throw Error("MANIFEST_GUARDRAIL_PROBE_LINK_REQUIRED");
+          const empirical =
+            e.evidenceBasis === "empirical_authenticated_routing";
+          if (empirical && !empiricalRoutingRejection(b, check.check_kind))
+            throw Error("MANIFEST_GUARDRAIL_ROUTING_INVALID");
+          if (
+            !(await negativeChargeProtection(
+              tx,
+              b,
+              m.document.agentId,
+              empirical,
+            ))
+          )
+            throw Error("MANIFEST_GUARDRAIL_CHARGE_UNPROTECTED");
         }
       }
       if (
@@ -338,8 +475,13 @@ export class ManifestRegistry {
           await tx.query(
             `SELECT 1 FROM provider_calls WHERE manifest_id=$1 AND purpose='canary' AND status='verified'
         AND reconciliation_status='verified' AND cost_micros IS NOT NULL AND generation_id IS NOT NULL
-        AND reported_model=$2 AND reported_provider=ANY($3::text[]) AND completed_at>clock_timestamp()-interval '1 hour'`,
-            [id, m.document.model, m.document.reportedProviderNames],
+        AND reported_model=ANY($2::text[]) AND reported_provider=ANY($3::text[]) AND completed_at>clock_timestamp()-interval '1 hour'
+        AND EXISTS(SELECT 1 FROM runtime_jobs j WHERE j.id=provider_calls.job_id AND j.status='completed' AND j.execution_mode='provider_canary')`,
+            [
+              id,
+              [m.document.model, m.document.canonicalModel].filter(Boolean),
+              m.document.reportedProviderNames,
+            ],
           )
         ).rowCount
       )
@@ -370,6 +512,48 @@ export class ManifestRegistry {
       );
     });
   }
+  /** Safe public qualification: never portray catalog/local assurance as a measured denial. */
+  async modelRestrictionEvidence(id: string) {
+    const row = (
+      await this.db.query(
+        "SELECT a.body FROM provider_guardrail_checks c JOIN provider_guardrail_artifacts a ON a.id=(c.evidence->>'artifactId')::uuid WHERE c.manifest_id=$1 AND c.check_kind='wrong_model' AND c.passed ORDER BY c.created_at DESC LIMIT 1",
+        [id],
+      )
+    ).rows[0];
+    if (!row) return { status: "unverified", liveModelRejectionTested: false };
+    return row.body.evidenceBasis === "operator_accepted_kimi_model_control_gap"
+      ? {
+          status: "operator_accepted_policy_and_local_pin_only",
+          liveModelRejectionTested: false,
+          limitation: MODEL_CONTROL_GAP_LIMITATION,
+        }
+      : {
+          status: "verified_negative_probe",
+          liveModelRejectionTested: true,
+          evidenceBasis: row.body.evidenceBasis,
+        };
+  }
+  async providerRestrictionEvidence(id: string) {
+    const row = (
+      await this.db.query(
+        "SELECT a.body FROM provider_guardrail_checks c JOIN provider_guardrail_artifacts a ON a.id=(c.evidence->>'artifactId')::uuid WHERE c.manifest_id=$1 AND c.check_kind='wrong_provider' AND c.passed ORDER BY c.created_at DESC LIMIT 1",
+        [id],
+      )
+    ).rows[0];
+    if (!row) return { status: "unverified", liveProbePassed: false };
+    return row.body.evidenceBasis ===
+      "single_serving_branch_policy_and_local_pin"
+      ? {
+          status: "policy_and_local_pin_only",
+          liveProbePassed: false,
+          limitation: SINGLE_PROVIDER_LIMITATION,
+        }
+      : {
+          status: "verified_negative_probe",
+          liveProbePassed: true,
+          evidenceBasis: row.body.evidenceBasis,
+        };
+  }
   async begin(m: Manifest, job: Job, canary: boolean) {
     const id = randomUUID();
     await this.db.query(
@@ -388,6 +572,12 @@ export class ManifestRegistry {
       ],
     );
     return id;
+  }
+  async diagnostic(callId: string, details: Record<string, unknown>) {
+    await this.db.query(
+      "INSERT INTO runtime_receipts(type,agent_id,job_id,details) SELECT 'provider_diagnostic',agent_id,job_id,$2::jsonb || jsonb_build_object('callId',id,'manifestId',manifest_id,'jobId',job_id) FROM provider_calls WHERE id=$1",
+      [callId, details],
+    );
   }
   async observe(
     id: string,

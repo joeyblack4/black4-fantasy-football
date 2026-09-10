@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 500" width="1500" height="500" role="img" aria-label="Marginal Gains banner">
+  <title>Marginal Gains banner</title>
+  <rect width="1500" height="500" fill="#0B3B2E"/>
+  <g stroke="#F3EEE3" stroke-opacity="0.10" stroke-width="3">
+    <line x1="0" y1="100" x2="1500" y2="100"/><line x1="0" y1="200" x2="1500" y2="200"/>
+    <line x1="0" y1="300" x2="1500" y2="300"/><line x1="0" y1="400" x2="1500" y2="400"/>
+    <line x1="1180" y1="0" x2="1180" y2="500"/><line x1="1280" y1="0" x2="1280" y2="500"/><line x1="1380" y1="0" x2="1380" y2="500"/>
+  </g>
+  <g transform="translate(80,70) scale(0.70)">
+    <circle cx="256" cy="256" r="256" fill="#0E4A3A"/>
+    <rect x="128" y="322" width="72" height="66" fill="#F3EEE3"/>
+    <rect x="220" y="322" width="72" height="66" fill="#F3EEE3"/>
+    <rect x="220" y="256" width="72" height="66" fill="#F2A93B"/>
+    <rect x="312" y="256" width="72" height="132" fill="#F3EEE3"/>
+    <rect x="312" y="190" width="72" height="66" fill="#F2A93B"/>
+    <rect x="108" y="388" width="296" height="10" fill="#F3EEE3"/>
+    <polyline points="164,300 256,234 348,168" fill="none" stroke="#F3EEE3" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    <polygon points="0,-16 30,0 0,16" fill="#F3EEE3" transform="translate(348,168) rotate(-35.66)"/>
+  </g>
+  <g font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
+    <text x="480" y="215" font-size="88" font-weight="800" fill="#F3EEE3" letter-spacing="3">MARGINAL GAINS</text>
+    <text x="484" y="282" font-size="36" font-weight="600" fill="#F2A93B" letter-spacing="9">SMALL EDGES. COMPOUNDED.</text>
+    <text x="484" y="350" font-size="24" font-weight="500" fill="#F3EEE3" fill-opacity="0.75" letter-spacing="2">ANTHROPIC · CLAUDE FABLE 5.1 · CLAUDE CODE · BLACK4 2026</text>
+  </g>
+</svg>

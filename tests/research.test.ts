@@ -70,6 +70,48 @@ const ok: ResearchTransport = async () => ({
   body: html,
 });
 describe("bounded owner research tools", () => {
+  it("allows only the public source catalog for a fenced staged-model canary", async () => {
+    const f = await fixture(ok);
+    try {
+      const manifestId = "10000000-0000-4000-8000-000000000001";
+      await f.db.query("UPDATE runtime_agents SET enabled=false WHERE id=$1", [
+        f.job.agentId,
+      ]);
+      await f.db.query(
+        "INSERT INTO provider_manifests(id,league_id,agent_id,version,document,key_fingerprint) VALUES($1,$2,$3,1,$4,'synthetic')",
+        [
+          manifestId,
+          f.actor.leagueId,
+          f.job.agentId,
+          { model: "synthetic/staged" },
+        ],
+      );
+      await f.db.query(
+        "UPDATE runtime_jobs SET execution_mode='provider_canary',payload=$2 WHERE id=$1",
+        [f.job.id, { manifestId }],
+      );
+      const staged = { ...f.job, model: "synthetic/staged" };
+      expect((await f.store.listSources(staged)).status).toBe("available");
+      await expect(
+        f.store.retrieve(staged, { url: "https://www.nfl.com/news/synthetic" }),
+      ).rejects.toThrow("JOB_AUTHORITY");
+      await expect(
+        f.store.listSources({ ...staged, model: "synthetic/wrong" }),
+      ).rejects.toThrow("JOB_AUTHORITY");
+      await expect(
+        f.store.listSources({ ...staged, fence: staged.fence + 1 }),
+      ).rejects.toThrow("JOB_AUTHORITY");
+      await f.db.query(
+        "UPDATE provider_manifests SET status='retired' WHERE id=$1",
+        [manifestId],
+      );
+      await expect(f.store.listSources(staged)).rejects.toThrow(
+        "JOB_AUTHORITY",
+      );
+    } finally {
+      await f.close();
+    }
+  });
   it("exposes only approved source paths and blocks credentials, redirects, private address forms and unsupported domains", () => {
     expect(permittedUrl("https://www.nfl.com/news/synthetic").source.id).toBe(
       "nfl-news",
@@ -288,6 +330,90 @@ describe("bounded owner research tools", () => {
       expect(await first).toMatchObject({ status: "retrieved" });
     } finally {
       complete();
+      await f.close();
+    }
+  });
+});
+
+describe("explicit general public retrieval", () => {
+  it("keeps default NFL policy and enables bounded cross-domain reading only by operator option", async () => {
+    const f = await fixture(ok);
+    try {
+      const page = "https://www.fantasypros.com/nfl/news/";
+      await expect(f.store.retrieve(f.job, { url: page })).rejects.toThrow(
+        "URL_NOT_PERMITTED",
+      );
+      let calls = 0;
+      const store = new ResearchStore(f.db, {
+        retrievalMode: "general-public",
+        transport: async (u) => {
+          calls++;
+          return {
+            ...(await ok(u)),
+            body: '<main>Untrusted public test text <a href="https://www.espn.com/nfl/">Other public site</a><a href="https://127.0.0.1/">Unsafe</a></main>',
+          };
+        },
+      });
+      const result = await store.retrieve(f.job, { url: page });
+      expect(result).toMatchObject({
+        status: "retrieved",
+        untrustedContent: true,
+        sourceTime: null,
+      });
+      expect((result as any).links).toEqual([
+        { url: "https://www.espn.com/nfl/", title: "Other public site" },
+      ]);
+      expect(await store.listSources(f.job)).toMatchObject({
+        retrievalMode: "general-public",
+        publicReading: { authenticatedAccess: false, paidAccess: false },
+        search: { status: "unavailable" },
+      });
+      for (const url of [
+        "http://example.com/",
+        "https://localhost/",
+        "https://127.0.0.1/",
+        "https://2130706433/",
+        "https://[::1]/",
+        "https://169.254.169.254/",
+        "https://metadata.internal/",
+        "https://x.local/",
+        "https://user:secret@example.com/",
+        "https://example.com:9443/",
+        "https://example.com/?token=secret",
+        "https://example.com/%2fsecret",
+        "https://example.com/#secret",
+      ])
+        await expect(store.retrieve(f.job, { url })).rejects.toThrow(
+          "URL_NOT_PERMITTED",
+        );
+      const server = new ResearchStore(f.db, {
+        retrievalMode: "general-public",
+        serverSearchAvailable: true,
+        transport: ok,
+      });
+      expect((await server.listSources(f.job)).search).toMatchObject({
+        status: "server-tool-configured",
+        tool: "openrouter:web_search",
+        engine: "exa",
+      });
+      expect(
+        createOwnerResearchTools(f.db, { serverSearchAvailable: true }).map(
+          (t) => t.name,
+        ),
+      ).not.toContain("research_search");
+      expect(calls).toBe(1);
+      const redirect = new ResearchStore(f.db, {
+        retrievalMode: "general-public",
+        transport: async () => ({
+          status: 302,
+          headers: { location: "http://127.0.0.1/" },
+          body: "",
+        }),
+      });
+      expect(
+        await redirect.retrieve(f.job, { url: "https://www.espn.com/nfl/" }),
+      ).toMatchObject({ status: "unavailable", code: "REDIRECT_NOT_ALLOWED" });
+    } finally {
       await f.close();
     }
   });

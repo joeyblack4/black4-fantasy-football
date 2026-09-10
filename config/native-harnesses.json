@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "franchises": {
+    "b4-openai": {
+      "harness": "codex",
+      "command": "tooling/node_modules/.bin/codex-acp",
+      "args": [],
+      "model": "gpt-6-astra",
+      "billing": "subscription",
+      "env": {
+        "INITIAL_AGENT_MODE": "agent-full-access"
+      }
+    },
+    "b4-anthropic": {
+      "harness": "claude-code",
+      "command": "tooling/node_modules/.bin/claude-agent-acp",
+      "args": [],
+      "model": "claude-fable-5-1[1m]",
+      "billing": "subscription",
+      "env": {
+        "CLAUDE_CODE_EXECUTABLE": "/opt/homebrew/bin/claude"
+      }
+    },
+    "b4-google": {
+      "harness": "gemini-cli",
+      "command": "tooling/node_modules/.bin/gemini",
+      "args": [
+        "--acp",
+        "--yolo",
+        "--skip-trust",
+        "--model",
+        "gemini-3.8-flash"
+      ],
+      "model": "gemini-3.8-flash",
+      "credential": "B4_LEAGUE_NATIVE_GOOGLE",
+      "credentialEnv": "GEMINI_API_KEY"
+    },
+    "b4-xai": {
+      "harness": "grok-build",
+      "command": "tooling/node_modules/.bin/grok",
+      "args": [
+        "agent",
+        "--always-approve",
+        "--no-leader",
+        "--model",
+        "grok-4.6",
+        "stdio"
+      ],
+      "model": "grok-4.6",
+      "credential": "B4_LEAGUE_NATIVE_XAI",
+      "credentialEnv": "XAI_API_KEY"
+    },
+    "b4-qwen": {
+      "harness": "qwen-code",
+      "command": "tooling/node_modules/.bin/qwen",
+      "args": [
+        "--acp",
+        "--yolo",
+        "--auth-type",
+        "openai",
+        "--model",
+        "qwen/qwen3.8-max-0902"
+      ],
+      "model": "qwen/qwen3.8-max-0902",
+      "credential": "B4_LEAGUE_NATIVE_OPENROUTER",
+      "credentialEnv": "OPENAI_API_KEY",
+      "env": {
+        "OPENAI_BASE_URL": "https://openrouter.ai/api/v1"
+      }
+    },
+    "b4-mistral": {
+      "harness": "mistral-vibe",
+      "command": ".local/tooling/bin/vibe-acp",
+      "args": [],
+      "model": "mistral-medium-3.5",
+      "credential": "B4_LEAGUE_NATIVE_MISTRAL",
+      "credentialEnv": "MISTRAL_API_KEY",
+      "billing": "subscription"
+    },
+    "b4-kimi": {
+      "harness": "kimi-code",
+      "command": "tooling/node_modules/.bin/kimi",
+      "args": [
+        "--auto",
+        "acp"
+      ],
+      "model": "moonshotai/kimi-k3",
+      "credential": "B4_LEAGUE_NATIVE_OPENROUTER",
+      "credentialEnv": "OPENROUTER_API_KEY"
+    },
+    "b4-meta": {
+      "harness": "goose",
+      "command": ".local/tooling/bin/goose",
+      "args": [
+        "acp",
+        "--with-builtin",
+        "developer"
+      ],
+      "model": "muse-spark-1.3",
+      "credential": "B4_LEAGUE_NATIVE_META",
+      "credentialEnv": "META_MODEL_API_KEY",
+      "env": {
+        "GOOSE_PROVIDER": "meta",
+        "GOOSE_MODEL": "muse-spark-1.3",
+        "GOOSE_MODE": "auto"
+      }
+    },
+    "b4-deepseek": {
+      "harness": "goose",
+      "command": ".local/tooling/bin/goose",
+      "args": [
+        "acp",
+        "--with-builtin",
+        "developer"
+      ],
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "credential": "B4_LEAGUE_NATIVE_OPENROUTER",
+      "credentialEnv": "OPENROUTER_API_KEY",
+      "env": {
+        "GOOSE_PROVIDER": "openrouter",
+        "GOOSE_MODEL": "deepseek/deepseek-v4-pro-0813",
+        "GOOSE_MODE": "auto"
+      }
+    },
+    "b4-zai": {
+      "harness": "opencode",
+      "command": "tooling/node_modules/.bin/opencode",
+      "args": [
+        "acp"
+      ],
+      "model": "openrouter/z-ai/glm-5.3",
+      "credential": "B4_LEAGUE_NATIVE_OPENROUTER",
+      "credentialEnv": "OPENROUTER_API_KEY"
+    },
+    "b4-minimax": {
+      "harness": "minimax-code",
+      "command": "tooling/node_modules/.bin/mcode",
+      "args": [
+        "acp"
+      ],
+      "model": "m:custom_provider%3Ablack4-openrouter:minimax%2Fminimax-m3:v:",
+      "credential": "B4_LEAGUE_NATIVE_MINIMAX",
+      "credentialEnv": "OPENROUTER_API_KEY",
+      "env": {
+        "MCODE_REGION": "en"
+      },
+      "stateDirectory": ".local/franchise-runtimes/minimax/.mcode"
+    }
+  }
+}

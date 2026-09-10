@@ -1,3 +1,5 @@
+import { hostBinding } from "../league/host.js";
+import { executeMflGovernance, snapshotMflGovernance } from "./mfl.js";
 import { randomUUID } from "node:crypto";
 import { transaction, type Db, type Tx } from "../db.js";
 import type { Actor } from "../league/schema.js";
@@ -37,6 +39,9 @@ export class GovernanceService {
         "SELECT pg_advisory_xact_lock(hashtextextended($1,7044))",
         [command.leagueId],
       );
+      const host = await hostBinding(tx, actor.leagueId);
+      if (host.host === "mfl")
+        return executeMflGovernance(tx, actor, command, host);
       const old = (
         await tx.query(
           "SELECT * FROM governance_receipts WHERE league_id=$1 AND actor_id=$2 AND idempotency_key=$3",
@@ -231,6 +236,15 @@ export class GovernanceService {
           };
           break;
         }
+        case "registerMflMenu":
+        case "submitMflProposal":
+        case "approveMflConstitution":
+        case "recordMflApplication":
+          guard(
+            false,
+            "FOOTBALL_HOST_MISMATCH",
+            "MFL governance requires an MFL host binding",
+          );
         case "prepareRatification": {
           guard(
             actor.role === "commissioner",
@@ -281,11 +295,38 @@ export class GovernanceService {
       return receipt;
     });
   }
+  async listMeetings(actor: Actor) {
+    guard(
+      ["owner", "commissioner", "system"].includes(actor.role),
+      "FORBIDDEN",
+      "Verified identity required",
+    );
+    return transaction(this.db, async (tx) => {
+      await tx.query(
+        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      );
+      if (actor.role === "owner") await this.owner(tx, actor);
+      const host = await hostBinding(tx, actor.leagueId);
+      const table =
+        host.host === "mfl" ? "mfl_governance_meetings" : "governance_meetings";
+      return (
+        await tx.query(
+          `SELECT * FROM ${table} WHERE league_id=$1 ${host.host === "mfl" ? "AND host_version=$2" : ""} ORDER BY created_at DESC LIMIT 50`,
+          host.host === "mfl"
+            ? [actor.leagueId, host.version]
+            : [actor.leagueId],
+        )
+      ).rows;
+    });
+  }
   async snapshot(actor: Actor, meetingId: string) {
     return transaction(this.db, async (tx) => {
       await tx.query(
         "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
       );
+      const host = await hostBinding(tx, actor.leagueId);
+      if (host.host === "mfl")
+        return snapshotMflGovernance(tx, actor, meetingId, host);
       guard(
         ["owner", "commissioner", "system"].includes(actor.role),
         "FORBIDDEN",

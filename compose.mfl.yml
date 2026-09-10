@@ -1,0 +1,18 @@
+# Layer onto compose.live.yml only after configuring the selected league and private files.
+# This does not start paid owner workers or enable writes in the deployment configuration.
+services:
+  api:
+    environment:
+      FOOTBALL_MFL_CONFIG_FILE: /run/secrets/mfl_config
+      MFL_SESSION_FILE: /run/secrets/mfl_session
+    secrets: [mfl_config, mfl_session]
+  worker:
+    environment:
+      FOOTBALL_MFL_CONFIG_FILE: /run/secrets/mfl_config
+      MFL_SESSION_FILE: /run/secrets/mfl_session
+    secrets: [mfl_config, mfl_session]
+secrets:
+  mfl_config:
+    file: ${FOOTBALL_MFL_PRIVATE_DIR:-./.local/live/mfl}/deployment.json
+  mfl_session:
+    file: ${FOOTBALL_MFL_PRIVATE_DIR:-./.local/live/mfl}/session.json

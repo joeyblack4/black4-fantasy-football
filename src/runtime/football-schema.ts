@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { leagueCommandSchema, type LeagueCommand } from "../league/schema.js";
+import { MflLocalDraftQueueCommandSchema } from "../mfl/draft-queue.js";
+import { MflOwnerActionSchema } from "../mfl/contracts.js";
 const ownerTypes = [
   "draftPick",
   "setDraftQueue",
@@ -35,7 +37,13 @@ export const FootballActionSchema = z
   .object({
     type: z.literal("football"),
     causalId: z.string().min(1).max(200),
-    command: OwnerFootballCommandSchema,
+    command: z.union([
+      OwnerFootballCommandSchema,
+      MflLocalDraftQueueCommandSchema,
+      z
+        .object({ type: z.literal("mfl"), action: MflOwnerActionSchema })
+        .strict(),
+    ]),
   })
   .strict();
 export type FootballAction = z.infer<typeof FootballActionSchema>;

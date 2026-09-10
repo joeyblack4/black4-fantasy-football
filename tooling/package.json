@@ -1,0 +1,16 @@
+{
+  "name": "black4-franchise-toolchain",
+  "private": true,
+  "description": "Pinned native harness tooling; no shared credentials or agent state",
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.75.1",
+    "@agentclientprotocol/codex-acp": "1.2.0",
+    "@google/gemini-cli": "0.58.0",
+    "@minimax-ai/code": "0.3.10",
+    "@moonshot-ai/kimi-code": "0.41.0",
+    "@openai/codex": "0.148.0",
+    "@qwen-code/qwen-code": "0.23.1",
+    "@xai-official/grok": "1.0.13",
+    "opencode-ai": "1.18.29"
+  }
+}

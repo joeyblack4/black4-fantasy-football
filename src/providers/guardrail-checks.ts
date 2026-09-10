@@ -17,7 +17,13 @@ import {
   protectedError,
   guardrailClock,
   guardrailTimestampFresh,
+  empiricalRoutingRejection,
+  negativeChargeProtection,
+  singleServingBranch,
+  SINGLE_PROVIDER_LIMITATION,
+  MODEL_CONTROL_GAP_LIMITATION,
 } from "./guardrail-evidence.js";
+import { proveLocalRouting } from "./guardrail-local-proof.js";
 
 const origin = "https://openrouter.ai/api/v1";
 const source = "https://openrouter.ai/docs/api/reference/errors-and-debugging";
@@ -27,6 +33,16 @@ export const NegativeProbeSchema = z
     model: z.string().regex(/^[^\s/]+\/[^\s]+$/),
     providerSlug: z.string().min(1).max(150),
     reservationMicros: z.number().int().positive().safe(),
+    controlRevision: z
+      .object({
+        priorCaptureId: z.uuid(),
+        reason: z.enum([
+          "operator-reviewed-control-confounded-by-account-training-policy",
+          "operator-reviewed-ancestor-provider-selector-overlap",
+        ]),
+      })
+      .strict()
+      .optional(),
     endpointControl: z
       .object({
         model: z.string(),
@@ -45,7 +61,7 @@ export const NegativeProbeSchema = z
     }),
   })
   .strict();
-export const NegativeAdjudicationSchema = z
+const DocumentedNegativeAdjudicationSchema = z
   .object({
     captureId: z.uuid(),
     kind: z.enum(["wrong_model", "wrong_provider"]),
@@ -68,6 +84,32 @@ export const NegativeAdjudicationSchema = z
       .strict(),
   })
   .strict();
+export const EmpiricalNegativeAdjudicationSchema = z
+  .object({
+    captureId: z.uuid(),
+    kind: z.enum(["wrong_model", "wrong_provider"]),
+    responseBytesHash: z.string().regex(/^[a-f0-9]{64}$/),
+    empiricalRouting: z
+      .object({
+        basis: z.literal("authenticated_single_endpoint_guardrail_filter"),
+        reason: z.enum([
+          "model-ignored-by-guardrail",
+          "provider-not-allowed-by-guardrail",
+        ]),
+        documentationUrl: z.literal(
+          "https://openrouter.ai/docs/guides/features/guardrails/overview",
+        ),
+        documentationScope: z.literal(
+          "General allowlist behavior only; exact routing diagnostics are empirical authenticated evidence, not documented error codes.",
+        ),
+      })
+      .strict(),
+  })
+  .strict();
+export const NegativeAdjudicationSchema = z.union([
+  DocumentedNegativeAdjudicationSchema,
+  EmpiricalNegativeAdjudicationSchema,
+]);
 export type NegativeProbe = z.infer<typeof NegativeProbeSchema>;
 type Secrets = {
   apiKey: string;
@@ -401,6 +443,7 @@ export class GuardrailChecker {
         evidenceHash(b.requestBody) !== b.requestHash ||
         b.requestedModel !== b.requestBody.model ||
         b.requestedProvider !== b.requestBody.provider?.only?.[0] ||
+        b.requestBody.provider?.only?.length !== 1 ||
         b.requestBody.provider?.allow_fallbacks !== false
       )
         throw Error("GUARDRAIL_REQUEST_TAMPERED");
@@ -413,47 +456,73 @@ export class GuardrailChecker {
             b.requestedProvider === m.document.providerSlug
       )
         throw Error("GUARDRAIL_PROBE_NOT_SINGLE_VARIABLE");
-      const expected = review.expectedSignature,
-        dimension = review.kind === "wrong_model" ? "model" : "provider";
-      if (
-        expected.reason !== dimension + "_allowlist" ||
-        expected.httpStatus !== b.httpStatus ||
-        [401, 402, 408, 429].includes(expected.httpStatus)
-      )
-        throw Error("GUARDRAIL_REJECTION_KIND_MISMATCH");
-      const conflictingReason = [b.error?.message, b.error?.metadata?.reason]
-        .filter((v) => typeof v === "string")
-        .join(" ");
-      if (
-        /\b(authentication|unauthorized|quota|budget|insufficient credits|rate limit|unavailable|not found|timed out)\b/i.test(
-          conflictingReason,
+      const empirical = "empiricalRouting" in review;
+      if (empirical) {
+        const reason =
+          review.kind === "wrong_model"
+            ? "model-ignored-by-guardrail"
+            : "provider-not-allowed-by-guardrail";
+        if (
+          review.empiricalRouting.reason !== reason ||
+          !empiricalRoutingRejection(b, review.kind)
         )
-      )
-        throw Error("GUARDRAIL_CONFLICTING_REJECTION_NOT_PROOF");
-      const discriminator = expected.discriminatorPath.reduce(
-        (v: any, k) => v?.[k],
-        b.error,
-      );
-      const specific = expected.discriminatorValue.toLowerCase();
-      if (
-        expected.discriminatorPath.at(-1) === "message" ||
-        discriminator !== expected.discriminatorValue ||
-        !specific.includes(dimension) ||
-        !/allowlist|allow_list|not_allowed|restriction|guardrail/.test(
-          specific,
-        ) ||
-        /auth|quota|budget|unavailable|rate_limit|not_found|timeout/.test(
-          specific,
+          throw Error("GUARDRAIL_EMPIRICAL_ROUTING_NOT_PROOF");
+        const c = b.endpointControl;
+        if (
+          !artifact.synthetic &&
+          (!c ||
+            c.model !== b.requestedModel ||
+            c.providerSlug !== b.requestedProvider ||
+            c.supportsMaxTokens !== true ||
+            c.sourceUrl !==
+              origin + "/models/" + b.requestedModel + "/endpoints" ||
+            !/^[a-f0-9]{64}$/.test(c.responseHash ?? "") ||
+            !(await guardrailTimestampFresh(client, c.observedAt, 3600000)))
         )
-      )
-        throw Error("GUARDRAIL_GENERIC_REJECTION_NOT_PROOF");
-      const quote = expected.documentationQuote.toLowerCase();
-      if (
-        !quote.includes(expected.discriminatorValue.toLowerCase()) ||
-        !quote.includes(dimension) ||
-        !/allowlist|allowed|restrict|guardrail/.test(quote)
-      )
-        throw Error("GUARDRAIL_DOCUMENTED_SIGNATURE_REQUIRED");
+          throw Error("GUARDRAIL_FRESH_ENDPOINT_CONTROL_REQUIRED");
+      } else {
+        const expected = review.expectedSignature,
+          dimension = review.kind === "wrong_model" ? "model" : "provider";
+        if (
+          expected.reason !== dimension + "_allowlist" ||
+          expected.httpStatus !== b.httpStatus ||
+          [401, 402, 408, 429].includes(expected.httpStatus)
+        )
+          throw Error("GUARDRAIL_REJECTION_KIND_MISMATCH");
+        const conflictingReason = [b.error?.message, b.error?.metadata?.reason]
+          .filter((v) => typeof v === "string")
+          .join(" ");
+        if (
+          /\b(authentication|unauthorized|quota|budget|insufficient credits|rate limit|unavailable|not found|timed out)\b/i.test(
+            conflictingReason,
+          )
+        )
+          throw Error("GUARDRAIL_CONFLICTING_REJECTION_NOT_PROOF");
+        const discriminator = expected.discriminatorPath.reduce(
+          (v: any, k) => v?.[k],
+          b.error,
+        );
+        const specific = expected.discriminatorValue.toLowerCase();
+        if (
+          expected.discriminatorPath.at(-1) === "message" ||
+          discriminator !== expected.discriminatorValue ||
+          !specific.includes(dimension) ||
+          !/allowlist|allow_list|not_allowed|restriction|guardrail/.test(
+            specific,
+          ) ||
+          /auth|quota|budget|unavailable|rate_limit|not_found|timeout/.test(
+            specific,
+          )
+        )
+          throw Error("GUARDRAIL_GENERIC_REJECTION_NOT_PROOF");
+        const quote = expected.documentationQuote.toLowerCase();
+        if (
+          !quote.includes(expected.discriminatorValue.toLowerCase()) ||
+          !quote.includes(dimension) ||
+          !/allowlist|allowed|restrict|guardrail/.test(quote)
+        )
+          throw Error("GUARDRAIL_DOCUMENTED_SIGNATURE_REQUIRED");
+      }
       if (
         !Array.isArray(b.inspectionArtifactIds) ||
         b.inspectionArtifactIds.length !== 2
@@ -496,22 +565,18 @@ export class GuardrailChecker {
         Number(b.costMicros ?? 0) > 0
       )
         throw Error("GUARDRAIL_PROBE_CALL_LINK_REQUIRED");
-      // A rejection is not a billing receipt. Only already reconciled, settled zero cost can pass.
-      const reservation = (
-        await client.query(
-          "SELECT status,actual_micros,agent_id,job_id FROM runtime_reservations WHERE id=$1",
-          [b.reservationId],
-        )
-      ).rows[0];
-      if (
-        !reservation ||
-        reservation.agent_id !== m.document.agentId ||
-        reservation.job_id !== b.jobId ||
-        reservation.status !== "settled" ||
-        Number(reservation.actual_micros) !== 0 ||
-        reservation.actual_micros === null
-      )
-        throw Error("GUARDRAIL_ZERO_COST_RECONCILIATION_REQUIRED");
+      const protection = await negativeChargeProtection(
+        client,
+        b,
+        m.document.agentId,
+        empirical,
+      );
+      if (!protection)
+        throw Error(
+          empirical
+            ? "GUARDRAIL_CHARGE_NOT_PROTECTED"
+            : "GUARDRAIL_ZERO_COST_RECONCILIATION_REQUIRED",
+        );
       const old = (
         await client.query(
           "SELECT * FROM provider_guardrail_artifacts WHERE manifest_id=$1 AND kind='adjudication' AND body->>'captureId'=$2",
@@ -535,7 +600,10 @@ export class GuardrailChecker {
         reservationId: b.reservationId,
         inspectionArtifactIds: b.inspectionArtifactIds,
         restrictionVerified: true,
-        costKnownZero: true,
+        ...protection,
+        evidenceBasis: empirical
+          ? "empirical_authenticated_routing"
+          : "documented_signature",
       };
       const artifactId = await saveGuardrailArtifact(
         client,
@@ -580,6 +648,59 @@ export class GuardrailChecker {
         : spec.model !== d.model || spec.providerSlug === d.providerSlug
     )
       throw Error("GUARDRAIL_PROBE_NOT_SINGLE_VARIABLE");
+    if (spec.controlRevision) {
+      const prior = await readGuardrailArtifact(
+        this.db,
+        spec.controlRevision.priorCaptureId,
+        id,
+        "negative_response",
+      );
+      const b = prior.body,
+        reasons = b.error?.metadata?.ineligibility_reasons;
+      const ancestor =
+        spec.controlRevision.reason ===
+        "operator-reviewed-ancestor-provider-selector-overlap";
+      const validCondition = ancestor
+        ? spec.kind === "wrong_provider" &&
+          b.result === "unexpected_acceptance" &&
+          b.hasGeneration === true &&
+          b.requestedModel === d.model &&
+          d.providerSlug.startsWith(b.requestedProvider + "/") &&
+          !d.providerSlug.startsWith(spec.providerSlug + "/") &&
+          !spec.providerSlug.startsWith(d.providerSlug + "/")
+        : !b.hasGeneration &&
+          !b.hasChoices &&
+          Array.isArray(reasons) &&
+          reasons.some(
+            (r: any) => r.reason === "paid-model-training-violation-by-account",
+          ) &&
+          reasons.some(
+            (r: any) =>
+              r.reason ===
+              (spec.kind === "wrong_model"
+                ? "model-ignored-by-guardrail"
+                : "provider-not-allowed-by-guardrail"),
+          );
+      if (
+        prior.synthetic !== this.options.synthetic ||
+        b.kind !== spec.kind ||
+        b.keyFingerprint !== m.key_fingerprint ||
+        !b.responseComplete ||
+        !validCondition ||
+        (b.requestedModel === spec.model &&
+          b.requestedProvider === spec.providerSlug) ||
+        b.controlRevision
+      )
+        throw Error("GUARDRAIL_REVIEWED_CONTROL_REVISION_INVALID");
+      const protection = await negativeChargeProtection(
+        this.db,
+        b,
+        d.agentId,
+        true,
+        ancestor,
+      );
+      if (!protection) throw Error("GUARDRAIL_CHARGE_NOT_PROTECTED");
+    }
     if (!this.options.synthetic || spec.endpointControl) {
       const c = spec.endpointControl,
         expectedUrl = origin + "/models/" + spec.model + "/endpoints";
@@ -623,8 +744,8 @@ export class GuardrailChecker {
       ]);
       const existing = (
         await this.db.query(
-          `SELECT evidence FROM provider_guardrail_checks WHERE manifest_id=$1 AND check_kind=$2 AND evidence->>'checker'='black4-guardrails-v1' AND evidence ? 'probeId' ORDER BY created_at DESC LIMIT 1`,
-          [id, spec.kind],
+          `SELECT evidence FROM provider_guardrail_checks WHERE manifest_id=$1 AND check_kind=$2 AND evidence->>'checker'='black4-guardrails-v1' AND evidence ? 'probeId' AND COALESCE(evidence->'controlRevision'->>'priorCaptureId','')=$3 ORDER BY created_at DESC LIMIT 1`,
+          [id, spec.kind, spec.controlRevision?.priorCaptureId ?? ""],
         )
       ).rows[0];
       if (existing)
@@ -668,6 +789,9 @@ export class GuardrailChecker {
       const callId = randomUUID(),
         probeId = randomUUID();
       const base = {
+        ...(spec.controlRevision
+          ? { controlRevision: spec.controlRevision }
+          : {}),
         probeId,
         jobId,
         reservationId,
@@ -880,5 +1004,249 @@ export class GuardrailChecker {
       );
       client.release();
     }
+  }
+
+  /** Alternative assurance, explicitly NOT a passed live wrong-provider probe. Only eligible
+   * when current catalog exposes the exact tag and ancestor aliases, with no independent tier. */
+  async certifySingleServingFamily(
+    actor: Principal,
+    id: string,
+    secrets: Secrets,
+  ) {
+    const m = await this.bound(actor, id, secrets.apiKey),
+      d = m.document;
+    if (actor.role !== "commissioner" || actor.leagueId !== d.leagueId)
+      throw Error("GUARDRAIL_OPERATOR_FORBIDDEN");
+    await this.inspect(actor, id, secrets);
+    const sourceUrl = origin + "/models/" + d.model + "/endpoints";
+    const response = await this.http(sourceUrl, {
+      redirect: "error",
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw Error("GUARDRAIL_CATALOG_UNAVAILABLE");
+    const raw = await response.text();
+    if (Buffer.byteLength(raw) > 4 * 1024 * 1024)
+      throw Error("GUARDRAIL_CATALOG_TOO_LARGE");
+    const data = JSON.parse(raw)?.data;
+    if (
+      data?.id !== d.model ||
+      !Array.isArray(data.endpoints) ||
+      !data.endpoints.length ||
+      data.endpoints.length > 100 ||
+      data.endpoints.some(
+        (e: any) => typeof e.status !== "number" || typeof e.tag !== "string",
+      )
+    )
+      throw Error("GUARDRAIL_CATALOG_INVALID");
+    const active = data.endpoints.filter((e: any) => e.status === 0),
+      activeTags = active.map((e: any) => e.tag);
+    if (
+      !singleServingBranch(d.providerSlug, activeTags) ||
+      !active.some(
+        (e: any) =>
+          e.tag === d.providerSlug &&
+          e.supported_parameters?.includes("max_tokens"),
+      )
+    )
+      throw Error("GUARDRAIL_INDEPENDENT_PROVIDER_CONTROL_EXISTS");
+    const localProof = await proveLocalRouting(d);
+    const inspections = (
+      await this.db.query(
+        `SELECT DISTINCT ON(check_kind) evidence->>'artifactId' id FROM provider_guardrail_checks WHERE manifest_id=$1 AND check_kind IN ('assignment','key_limit') AND passed ORDER BY check_kind,created_at DESC`,
+        [id],
+      )
+    ).rows.map((r) => r.id);
+    if (inspections.length !== 2)
+      throw Error("GUARDRAIL_INSPECTION_LINK_REQUIRED");
+    const body = {
+      manifestId: id,
+      kind: "wrong_provider",
+      keyFingerprint: m.key_fingerprint,
+      keyHash: d.upstreamKeyHash,
+      guardrailId: d.guardrailId,
+      model: d.model,
+      providerSlug: d.providerSlug,
+      evidenceBasis: "single_serving_branch_policy_and_local_pin",
+      independentLiveProbePassed: false,
+      limitation: SINGLE_PROVIDER_LIMITATION,
+      operatorId: actor.id,
+      inspectionArtifactIds: inspections,
+      localProof,
+      catalog: {
+        sourceUrl,
+        responseHash: createHash("sha256").update(raw).digest("hex"),
+        observedAt: await guardrailClock(this.db),
+        activeTags,
+      },
+    };
+    const artifactId = await saveGuardrailArtifact(
+      this.db,
+      id,
+      "adjudication",
+      this.options.synthetic,
+      body,
+    );
+    await this.registry.recordGuardrailCheck(actor, id, {
+      kind: "wrong_provider",
+      passed: true,
+      synthetic: this.options.synthetic,
+      evidence: {
+        checker: "black4-single-serving-branch-assurance-v1",
+        artifactId,
+        liveProbePassed: false,
+        limitation: SINGLE_PROVIDER_LIMITATION,
+      },
+    });
+    return {
+      artifactId,
+      gateSatisfied: true,
+      liveProbePassed: false,
+      limitation: SINGLE_PROVIDER_LIMITATION,
+      model: d.model,
+      providerSlug: d.providerSlug,
+      activeTags,
+    };
+  }
+  /** Exact operator-approved Kimi exception. It does not record a passed upstream model probe. */
+  async certifyKimiModelControlGap(
+    actor: Principal,
+    id: string,
+    secrets: Secrets,
+    acceptedLimitation: string,
+  ) {
+    const m = await this.bound(actor, id, secrets.apiKey),
+      d = m.document;
+    if (
+      actor.role !== "commissioner" ||
+      actor.leagueId !== d.leagueId ||
+      acceptedLimitation !== MODEL_CONTROL_GAP_LIMITATION
+    )
+      throw Error("GUARDRAIL_OPERATOR_ACCEPTANCE_REQUIRED");
+    if (
+      d.model !== "moonshotai/kimi-k3" ||
+      d.providerSlug !== "moonshotai/mxfp4"
+    )
+      throw Error("GUARDRAIL_KIMI_EXCEPTION_SCOPE");
+    await this.inspect(actor, id, secrets);
+    const getPublic = async (url: string) => {
+      const r = await this.http(url, {
+        redirect: "error",
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!r.ok) throw Error("GUARDRAIL_CATALOG_UNAVAILABLE");
+      const raw = await r.text();
+      if (Buffer.byteLength(raw) > 8 * 1024 * 1024)
+        throw Error("GUARDRAIL_CATALOG_TOO_LARGE");
+      return {
+        data: JSON.parse(raw).data,
+        sourceUrl: url,
+        responseHash: createHash("sha256").update(raw).digest("hex"),
+        observedAt: await guardrailClock(this.db),
+      };
+    };
+    const catalog = await getPublic(origin + "/models");
+    if (!Array.isArray(catalog.data)) throw Error("GUARDRAIL_CATALOG_INVALID");
+    const family = catalog.data.filter(
+      (x: any) =>
+        typeof x.id === "string" &&
+        x.id.startsWith("moonshotai/") &&
+        x.id !== d.model &&
+        x.canonical_slug !== d.canonicalModel,
+    );
+    if (family.length < 1 || family.length > 30)
+      throw Error("GUARDRAIL_CATALOG_SEARCH_BOUND");
+    const searches = [];
+    for (const model of family) {
+      const record = await getPublic(
+        origin + "/models/" + model.id + "/endpoints",
+      );
+      if (record.data?.id !== model.id || !Array.isArray(record.data.endpoints))
+        throw Error("GUARDRAIL_CATALOG_INVALID");
+      const matches = record.data.endpoints.filter(
+        (e: any) =>
+          e.tag === d.providerSlug &&
+          e.status === 0 &&
+          e.supported_parameters?.includes("max_tokens"),
+      );
+      if (matches.length)
+        throw Error("GUARDRAIL_ALTERNATE_MODEL_CONTROL_EXISTS");
+      searches.push({
+        model: model.id,
+        canonicalModel: model.canonical_slug,
+        sourceUrl: record.sourceUrl,
+        responseHash: record.responseHash,
+        observedAt: record.observedAt,
+        matchingCallableEndpoints: 0,
+      });
+    }
+    const positive = (
+      await this.db.query(
+        `SELECT c.id,c.job_id FROM provider_calls c JOIN runtime_jobs j ON j.id=c.job_id WHERE c.manifest_id=$1 AND c.purpose='canary' AND c.staff_role IS DISTINCT FROM 'guardrail-probe' AND c.status='verified' AND c.reconciliation_status='verified' AND c.cost_micros IS NOT NULL AND c.generation_id IS NOT NULL AND c.reported_model=ANY($2::text[]) AND c.reported_provider=ANY($3::text[]) AND j.status='completed' AND j.execution_mode='provider_canary' AND c.completed_at>clock_timestamp()-interval '1 hour' AND EXISTS(SELECT 1 FROM runtime_receipts r WHERE r.agent_id=c.agent_id AND r.type='provider_diagnostic' AND r.details->>'kind'='canary_read_tool' AND r.details->>'tool'='research_sources' AND r.details->>'executed'='true' AND r.created_at BETWEEN (SELECT min(started_at) FROM provider_calls WHERE job_id=c.job_id) AND c.completed_at) ORDER BY c.completed_at DESC LIMIT 1`,
+        [
+          id,
+          [d.model, d.canonicalModel].filter(Boolean),
+          d.reportedProviderNames,
+        ],
+      )
+    ).rows[0];
+    if (!positive) throw Error("GUARDRAIL_POSITIVE_MODEL_TOOL_CANARY_REQUIRED");
+    const localProof = await proveLocalRouting(d);
+    const inspections = (
+      await this.db.query(
+        `SELECT DISTINCT ON(check_kind) evidence->>'artifactId' id FROM provider_guardrail_checks WHERE manifest_id=$1 AND check_kind IN ('assignment','key_limit') AND passed ORDER BY check_kind,created_at DESC`,
+        [id],
+      )
+    ).rows.map((r) => r.id);
+    const body = {
+      manifestId: id,
+      kind: "wrong_model",
+      keyFingerprint: m.key_fingerprint,
+      keyHash: d.upstreamKeyHash,
+      guardrailId: d.guardrailId,
+      model: d.model,
+      providerSlug: d.providerSlug,
+      evidenceBasis: "operator_accepted_kimi_model_control_gap",
+      independentLiveProbePassed: false,
+      limitation: MODEL_CONTROL_GAP_LIMITATION,
+      operatorId: actor.id,
+      inspectionArtifactIds: inspections,
+      localProof,
+      positiveCallId: positive.id,
+      positiveJobId: positive.job_id,
+      catalog: {
+        sourceUrl: catalog.sourceUrl,
+        responseHash: catalog.responseHash,
+        observedAt: catalog.observedAt,
+        scope:
+          "all currently listed moonshotai models with a distinct canonical identity",
+        searches,
+      },
+    };
+    const artifactId = await saveGuardrailArtifact(
+      this.db,
+      id,
+      "adjudication",
+      this.options.synthetic,
+      body,
+    );
+    await this.registry.recordGuardrailCheck(actor, id, {
+      kind: "wrong_model",
+      passed: true,
+      synthetic: this.options.synthetic,
+      evidence: {
+        checker: "black4-operator-accepted-model-control-gap-v1",
+        artifactId,
+        liveModelRejectionTested: false,
+        limitation: MODEL_CONTROL_GAP_LIMITATION,
+      },
+    });
+    return {
+      artifactId,
+      gateSatisfied: true,
+      liveModelRejectionTested: false,
+      limitation: MODEL_CONTROL_GAP_LIMITATION,
+      modelsChecked: searches.length,
+      positiveCallId: positive.id,
+    };
   }
 }
