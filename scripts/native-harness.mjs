@@ -12,6 +12,7 @@ import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { spawn, execFileSync } from "node:child_process";
+import { preparePlatformControlWorkspace } from "./platform-control-workspaces.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const registry = JSON.parse(
   readFileSync(join(root, "config/native-harnesses.json"), "utf8"),
@@ -59,6 +60,11 @@ const env = {
   ...spec.env,
   PATH: `${join(root, "tooling/node_modules/.bin")}:${join(root, ".local/tooling/bin")}:${process.env.PATH || ""}`,
 };
+// Shared courier paths do not grant authority; Platform Control authorizes every call.
+env.B4_PLATFORM_CONTROL_HELPER = join(root, "scripts/platform-control.mjs");
+env.B4_PLATFORM_CONTROL_GUIDE = join(root, "docs/PLATFORM_CONTROL.md");
+env.B4_PLATFORM_CONTROL_COMMUNITY =
+  "relay:wss://black4fantasysports.communities.buzz.xyz/";
 if (keyPath && existsSync(keyPath))
   env[spec.credentialEnv] = readFileSync(keyPath, "utf8").trim();
 const providerConfigPath = join(
@@ -87,11 +93,17 @@ if (process.argv.includes("--check")) {
       credential: spec.credential || "native-subscription",
       credentialPresent: authPresent,
       subscriptionVerified: false,
+      platformControlWorkspaceReady: preparePlatformControlWorkspace(
+        workspace,
+        false,
+      ),
+      platformControlHelper: env.B4_PLATFORM_CONTROL_HELPER,
     }),
   );
   process.exit(existsSync(command) && authPresent ? 0 : 1);
 }
 mkdirSync(workspace, { recursive: true, mode: 0o700 });
+preparePlatformControlWorkspace(workspace);
 const localState = (name) => {
   const p = join(state, name);
   mkdirSync(p, { recursive: true, mode: 0o700 });

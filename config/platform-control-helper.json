@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "helperVersion": "2026-09-10.4c460be",
+  "sha256": "b64810c31f5b5c32e5c53257df20e9eb2e03cf8dab385d9706eaa2b3f09c404c",
+  "source": "Black4 Platform Control channel-agent-helper-script.ts",
+  "communityId": "relay:wss://black4fantasysports.communities.buzz.xyz/",
+  "relayUrl": "wss://black4fantasysports.communities.buzz.xyz",
+  "baseUrl": "https://platform-control-production.up.railway.app"
+}
