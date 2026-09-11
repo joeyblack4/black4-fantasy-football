@@ -139,10 +139,11 @@ describe("Fantasy Platform Control courier", () => {
       ).toBe(1);
     }
   });
-  it("preserves current upstream subcommands and social idempotency flags", () => {
+  it("preserves upstream commands, approvals and social idempotency flags", () => {
     const path = fixture();
     for (const args of [
       ["social", "list", "--channel", "room"],
+      ["--connector", "github", "--tool", "create_issue", "--arguments", '{"title":"draft"}', "--approval-receipt", "approved-receipt", "--channel", "room"],
       ["warehouse", "describe", "example_table", "--channel", "room"],
       [
         "--connector",
@@ -168,6 +169,42 @@ describe("Fantasy Platform Control courier", () => {
         "--community",
         config.communityId,
       ]);
+    }
+  });
+  it("forwards an approval receipt outside the exact operation and preserves pending responses without replay", () => {
+    const pending = { approval: { receiptId: "pending-receipt", status: "pending" }, error: { code: "approval_required" } };
+    const preload = `let calls=0; globalThis.fetch=async(url,options)=>{if(++calls!==1)throw Error("unexpected replay"); console.error(JSON.stringify({url,body:JSON.parse(options.body)})); return {ok:true,status:202,text:async()=>JSON.stringify(${JSON.stringify(pending)})};};`;
+    const args = ["--channel", "room", "--connector", "github", "--catalog", "catalog-github", "--method", "POST", "--endpoint", "/repos/example/site/issues", "--body", '{"title":"draft"}', "--approval-receipt", "approved-receipt", "--connection", "connection-github"];
+    expect(run(fixture(), args).status).toBe(0);
+    const result = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, join(root, "scripts/vendor/channel-agent-helper.mjs"), ...args, "--url", "https://synthetic.invalid", "--community", config.communityId], { env: { BUZZ_PRIVATE_KEY: syntheticKey }, encoding: "utf8" });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(pending);
+    expect(JSON.parse(result.stderr).body).toEqual({
+      communityId: config.communityId, channelId: "room", catalogId: "catalog-github", approvalReceiptId: "approved-receipt",
+      payload: { connector: "github", connectionId: "connection-github", method: "POST", endpoint: "/repos/example/site/issues", body: { title: "draft" } },
+    });
+  });
+  it("returns MCP pending receipts without hanging or replay and forwards approvals only on exact tool calls", () => {
+    const approval = { receiptId: "pending-mcp-receipt", status: "pending", expiresAt: "2026-09-11T06:00:00Z" };
+    const messages = [
+      { jsonrpc: "2.0", id: 0, method: "initialize", params: {} },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
+      { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "reviewed_tool", arguments: { title: "exact draft" } } },
+    ];
+    const preload = `let calls=0; globalThis.fetch=async(url,options)=>{if(++calls>4)throw Error("unexpected replay"); const request=JSON.parse(options.body); console.error(JSON.stringify(request)); const tool=request.message.method==="tools/call"; return {ok:true,status:tool?202:200,json:async()=>tool?{approval:${JSON.stringify(approval)},error:{code:"approval_required",message:"Pending operator approval"}}:{sessionId:"synthetic-session",...(Object.hasOwn(request.message,"id")?{message:{jsonrpc:"2.0",id:request.message.id,result:{}}}:{})}};};`;
+    for (const receipt of [undefined, "approved-mcp-receipt"]) {
+      const result = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, join(root, "scripts/vendor/channel-agent-helper.mjs"), "mcp", "--connector", "synthetic-mcp", "--catalog", "catalog-synthetic", "--channel", "room", "--url", "https://synthetic.invalid", "--community", config.communityId, ...(receipt ? ["--approval-receipt", receipt] : [])], {env: {BUZZ_PRIVATE_KEY:syntheticKey}, input:messages.map(m=>JSON.stringify(m)).join("\n")+"\n", encoding:"utf8", timeout:5000});
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      const requests=result.stderr.trim().split("\n").map(line=>JSON.parse(line));
+      expect(requests).toHaveLength(messages.length);
+      expect(requests.map(r=>r.message)).toEqual(messages);
+      expect(requests.slice(0,3).every(r=>!("approvalReceiptId" in r))).toBe(true);
+      expect(requests[3].approvalReceiptId).toBe(receipt);
+      const responses=result.stdout.trim().split("\n").map(line=>JSON.parse(line));
+      expect(responses).toHaveLength(3);
+      expect(responses[2]).toEqual({jsonrpc:"2.0",id:2,error:{code:-32003,message:"Pending operator approval",data:{code:"approval_required",status:"pending",approval}}});
     }
   });
   it("refuses a modified bundle before execution", () => {
