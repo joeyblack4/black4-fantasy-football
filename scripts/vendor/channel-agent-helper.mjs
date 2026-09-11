@@ -2296,6 +2296,9 @@ if (positional[0] === "mcp") {
       catalogId,
       connector,
       message,
+      // Approval binds the exact tools/call message. Never attach a decision
+      // to initialize, notifications or catalog discovery, and never replay it.
+      ...message?.method === "tools/call" && args["approval-receipt"] ? { approvalReceiptId: args["approval-receipt"] } : {},
       ...sessionId ? { sessionId } : {}
     });
     try {
@@ -2308,15 +2311,16 @@ if (positional[0] === "mcp") {
         body: routeBody
       });
       const payload = await response2.json().catch(() => ({}));
-      if (!response2.ok) {
+      const pendingApproval = response2.status === 202 && payload?.approval?.status === "pending";
+      if (!response2.ok || pendingApproval) {
         if (message && Object.prototype.hasOwnProperty.call(message, "id")) {
           process.stdout.write(`${JSON.stringify({
             jsonrpc: "2.0",
             id: message.id,
             error: {
-              code: response2.status === 403 ? -32003 : -32e3,
+              code: pendingApproval || response2.status === 403 ? -32003 : -32e3,
               message: payload?.error?.message || `Platform Control MCP bridge failed (${response2.status}).`,
-              data: payload?.error?.code ? { code: payload.error.code } : void 0
+              data: pendingApproval ? { code: "approval_required", status: "pending", approval: payload.approval } : payload?.error?.code ? { code: payload.error.code } : void 0
             }
           })}
 `);
@@ -2401,8 +2405,10 @@ var body = JSON.stringify({
   communityId,
   channelId,
   catalogId: args.catalog || operation.catalog,
+  ...args["approval-receipt"] ? { approvalReceiptId: args["approval-receipt"] } : {},
   payload: operation.kind === "tool" ? { kind: "tool", connector: operation.connector, tool: operation.tool, arguments: toolArguments || {} } : {
     connector: operation.connector,
+    ...args.connection ? { connectionId: args.connection } : {},
     method: operation.method,
     endpoint: operation.endpoint,
     ...params !== void 0 ? { params } : {},
