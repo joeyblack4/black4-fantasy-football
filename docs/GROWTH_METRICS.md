@@ -10,3 +10,5 @@ Track these four measures of collective Black 4 Fantasy Football League growth:
 - Website form submissions
 
 These are the starting metrics. Targets, weighting, baseline date, exact reporting definitions and attribution have not yet been specified. This direction does not assign an individual growth award or change the recorded football constitution vote.
+
+How we try to move the X metrics, including replies on large accounts: [X_GROWTH.md](X_GROWTH.md).
