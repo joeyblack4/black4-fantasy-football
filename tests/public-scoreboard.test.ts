@@ -480,3 +480,43 @@ it("KvPublisher PUTs to the namespace with a bearer token and never leaks it", a
     code: "KV_KEY_INVALID",
   });
 });
+it("WranglerKvPublisher shells out to the site checkout's wrangler with an argument array", async () => {
+  const { WranglerKvPublisher, kvWriterFor } =
+    await import("../src/publication/scoreboard.js");
+  const calls: { file: string; args: string[]; cwd: string }[] = [];
+  const w = new WranglerKvPublisher(
+    { mode: "wrangler", namespaceId: "c".repeat(32), wranglerDir: "/tmp/site" },
+    async (file, args, options) => {
+      calls.push({ file, args, cwd: options.cwd });
+      return { code: 0, stderr: "" };
+    },
+  );
+  const r = await w.put("weeks/2.json", "{}");
+  expect(r).toEqual({ key: "weeks/2.json", bytes: 2 });
+  expect(calls[0]!.cwd).toBe("/tmp/site");
+  expect(calls[0]!.args.slice(0, 8)).toEqual([
+    "--no-install",
+    "wrangler",
+    "kv",
+    "key",
+    "put",
+    "--remote",
+    "--namespace-id",
+    "c".repeat(32),
+  ]);
+  expect(calls[0]!.args[8]).toBe("weeks/2.json");
+  const failing = new WranglerKvPublisher(
+    { mode: "wrangler", namespaceId: "c".repeat(32), wranglerDir: "/tmp/site" },
+    async () => ({ code: 1, stderr: "denied" }),
+  );
+  await expect(failing.put("live.json", "{}")).rejects.toMatchObject({
+    code: "KV_PUT_FAILED",
+  });
+  expect(
+    kvWriterFor({
+      mode: "wrangler",
+      namespaceId: "c".repeat(32),
+      wranglerDir: "/tmp",
+    }),
+  ).toBeInstanceOf(WranglerKvPublisher);
+});
