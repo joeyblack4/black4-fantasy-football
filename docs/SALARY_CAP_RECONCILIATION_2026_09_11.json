@@ -1,0 +1,208 @@
+{
+  "asOf": "2026-09-11",
+  "seasonCapUsd": 600,
+  "policy": "Provider charges plus authorized API-rate cap valuation for native ChatGPT/Claude usage; no valuation added on top of charges for the same native inference. Historical OpenRouter charges retained. This is the league cap ledger, not a cash ledger.",
+  "owners": [
+    {
+      "company": "qwen",
+      "owner": "Meridian Grid",
+      "model": "Qwen 3.8 Max \u00b7 0902",
+      "components": [
+        {
+          "id": "qwen:openrouter:key-lifetime:20260911T223154Z",
+          "kind": "provider_charge",
+          "usd": "146.714058",
+          "source": ".local/diagnostics/league-provider-spend-reconciled-20260911.json"
+        }
+      ],
+      "capUsedUsd": "146.714058",
+      "capRemainingUsd": "453.285942"
+    },
+    {
+      "company": "anthropic",
+      "owner": "Marginal Gains",
+      "model": "Claude Fable 5.1",
+      "components": [
+        {
+          "id": "anthropic:openrouter:key-lifetime:20260911T223154Z",
+          "kind": "provider_charge",
+          "usd": "26.51177525",
+          "source": ".local/diagnostics/league-provider-spend-reconciled-20260911.json"
+        },
+        {
+          "id": "anthropic:native:20260911",
+          "kind": "salary_cap_valuation",
+          "usd": "61.03126950",
+          "source": "Native snapshot 20260911T220947Z, OpenRouter tariff quote; cap valuation authorized by Joey 2026-09-11; not a provider charge"
+        }
+      ],
+      "capUsedUsd": "87.54304475",
+      "capRemainingUsd": "512.45695525"
+    },
+    {
+      "company": "google",
+      "owner": "Mountain View Matrix",
+      "model": "Gemini 3.5 Flash",
+      "components": [
+        {
+          "id": "google:openrouter:key-lifetime:20260911T223154Z",
+          "kind": "provider_charge",
+          "usd": "1.0803789",
+          "source": ".local/diagnostics/league-provider-spend-reconciled-20260911.json"
+        },
+        {
+          "id": "google:native:20260911",
+          "kind": "provider_charge",
+          "usd": "63.91",
+          "source": "AI Studio Spend, Black 4 Fantasy League key selected, Aug15-Sep11, read Sep11 22:38Z; provider reports up to 24h latency"
+        }
+      ],
+      "capUsedUsd": "64.9903789",
+      "capRemainingUsd": "535.0096211"
+    },
+    {
+      "company": "openai",
+      "owner": "Signal Callers",
+      "model": "GPT-6 Astra",
+      "components": [
+        {
+          "id": "openai:openrouter:key-lifetime:20260911T223154Z",
+          "kind": "provider_charge",
+          "usd": "5.01621975",
+          "source": ".local/diagnostics/league-provider-spend-reconciled-20260911.json"
+        },
+        {
+          "id": "openai:native:20260911",
+          "kind": "salary_cap_valuation",
+          "usd": "51.704854",
+          "source": "Native snapshot 20260911T220947Z, OpenRouter tariff quote; cap valuation authorized by Joey 2026-09-11; not a provider charge"
+        }
+      ],
+      "capUsedUsd": "56.72107375",
+      "capRemainingUsd": "543.27892625"
+    },
+    {
+      "company": "xai",
+      "owner": "Colossus",
+      "model": "Grok 4.6",
+      "components": [
+        {
+          "id": "xai:openrouter:key-lifetime:20260911T223154Z",
+          "kind": "provider_charge",
+          "usd": "1.963868",
+          "source": ".local/diagnostics/league-provider-spend-reconciled-20260911.json"
+        },
+        {
+          "id": "xai:native:20260911",
+          "kind": "provider_charge",
+          "usd": "47.555046",
+          "source": "73 native turn costUsdTicks records, all provider-reported, snapshot 20260911T220947Z; retained native records, not an invoice reconciliation"
+        }
+      ],
+      "capUsedUsd": "49.518914",
+      "capRemainingUsd": "550.481086"
+    },
+    {
+      "company": "kimi",
+      "owner": "Moonshot Marauders",
+      "model": "Kimi K3 \u00b7 20260715",
+      "components": [
+        {
+          "id": "kimi:openrouter:key-lifetime:20260911T223154Z",
+          "kind": "provider_charge",
+          "usd": "41.7447012",
+          "source": ".local/diagnostics/league-provider-spend-reconciled-20260911.json"
+        }
+      ],
+      "capUsedUsd": "41.7447012",
+      "capRemainingUsd": "558.2552988"
+    },
+    {
+      "company": "zai",
+      "owner": "Z Marks the Spot",
+      "model": "GLM 5.3 \u00b7 20260816",
+      "components": [
+        {
+          "id": "zai:openrouter:key-lifetime:20260911T223154Z",
+          "kind": "provider_charge",
+          "usd": "22.36591928",
+          "source": ".local/diagnostics/league-provider-spend-reconciled-20260911.json"
+        }
+      ],
+      "capUsedUsd": "22.36591928",
+      "capRemainingUsd": "577.63408072"
+    },
+    {
+      "company": "mistral",
+      "owner": "Mistral Voltage",
+      "model": "Mistral Medium 3.5",
+      "components": [
+        {
+          "id": "mistral:openrouter:key-lifetime:20260911T223154Z",
+          "kind": "provider_charge",
+          "usd": "6.2048865",
+          "source": ".local/diagnostics/league-provider-spend-reconciled-20260911.json"
+        },
+        {
+          "id": "mistral:native:20260911",
+          "kind": "provider_charge",
+          "usd": "14.99",
+          "source": "Mistral paid invoice MSTRL-API-902510-001, Sep8, read Sep11 22:37Z; $49.49 included Vibe allowance NOT an added cash charge; PAYG disabled"
+        }
+      ],
+      "capUsedUsd": "21.1948865",
+      "capRemainingUsd": "578.8051135"
+    },
+    {
+      "company": "meta",
+      "owner": "Meta Mesh",
+      "model": "Muse Spark 1.3",
+      "components": [
+        {
+          "id": "meta:openrouter:key-lifetime:20260911T223154Z",
+          "kind": "provider_charge",
+          "usd": "1.76757515",
+          "source": ".local/diagnostics/league-provider-spend-reconciled-20260911.json"
+        },
+        {
+          "id": "meta:native:20260911",
+          "kind": "provider_charge",
+          "usd": "14.55",
+          "source": "Meta Usage, Black4 Fantasy League key selected, Sep5-11, read Sep11 22:38Z"
+        }
+      ],
+      "capUsedUsd": "16.31757515",
+      "capRemainingUsd": "583.68242485"
+    },
+    {
+      "company": "deepseek",
+      "owner": "DeepSeek Abyssal",
+      "model": "DeepSeek V4 Pro \u00b7 0813",
+      "components": [
+        {
+          "id": "deepseek:openrouter:key-lifetime:20260911T223154Z",
+          "kind": "provider_charge",
+          "usd": "9.253332806",
+          "source": ".local/diagnostics/league-provider-spend-reconciled-20260911.json"
+        }
+      ],
+      "capUsedUsd": "9.253332806",
+      "capRemainingUsd": "590.746667194"
+    },
+    {
+      "company": "minimax",
+      "owner": "Mavis & Co.",
+      "model": "MiniMax M3 \u00b7 20260531",
+      "components": [
+        {
+          "id": "minimax:openrouter:key-lifetime:20260911T223154Z",
+          "kind": "provider_charge",
+          "usd": "6.413097086",
+          "source": ".local/diagnostics/league-provider-spend-reconciled-20260911.json"
+        }
+      ],
+      "capUsedUsd": "6.413097086",
+      "capRemainingUsd": "593.586902914"
+    }
+  ]
+}
