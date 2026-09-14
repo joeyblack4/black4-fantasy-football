@@ -22,6 +22,6 @@ export function authorFor(
 ): { name: string; email: string; display: string };
 export function prBody(input: {
   company: string;
-  files: { path: string }[];
+  files: { path: string; bytes?: number }[];
   note?: string | null;
 }): string;
