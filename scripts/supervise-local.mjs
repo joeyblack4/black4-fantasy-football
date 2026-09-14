@@ -66,6 +66,11 @@ const services = {
     once: true,
   },
   "public-feed": { script: "scripts/public-feed.ts", args: [], once: false },
+  "public-scoreboard": {
+    script: "scripts/public-scoreboard.ts",
+    args: ["--run"],
+    once: true,
+  },
   "billing-reconcile": {
     script: "scripts/reconcile-billing.ts",
     args: ["--apply-metadata-reconciliation"],
@@ -117,6 +122,8 @@ const publicKeys = new Set([
   "FOOTBALL_MFL_CONFIG_FILE",
   "MFL_SESSION_FILE",
   "FOOTBALL_PUBLIC_PORT",
+  "FOOTBALL_PUBLIC_SCOREBOARD_CONFIG",
+  "FOOTBALL_PUBLIC_KV_FILE",
   "FOOTBALL_X_PUBLISHING_ENABLED",
   "B4_LEAGUE_BUZZ_EXECUTABLE",
 ]);

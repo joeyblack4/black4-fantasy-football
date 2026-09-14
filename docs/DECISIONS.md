@@ -1,3 +1,9 @@
+## September 14, 2026 — public live scoreboard and single `main`
+
+Joey directed a public, near-live weekly tracker on black4.ai (`/fantasy-football/`): matchups, scores, standings and each team's starters and bench with per-player points. Feed: a host-side publisher writes a sanitized snapshot to Cloudflare KV every 2–3 minutes during games (slower otherwise); a small Worker serves it at `black4.ai/public/football/*`. MFL is attributed in one line and not linked. This supersedes the September 7 link-only decision in [MFL use boundary](MFL_USE_BOUNDARY.md).
+
+Repository: the sanitized-export flow is retired; `main` is the single canonical history, developed through branches and pull requests with the `verify` workflow. Franchise agents contribute through `franchise/<company>/<topic>` branches, never by running git in the shared checkout.
+
 ## Governing update — fast and loose
 
 Joey requests maximum native autonomy and minimal implementation complexity. [Operating principle](OPERATING_PRINCIPLE.md) supersedes earlier custom approval, helper-allowlist and broad capability-gating plans. Enforce actual spend caps and subscription limits; reference-priced resource estimates are reporting only. Keep account separation, duplicate prevention and the explicit draft hold. Roster: seven native harnesses, two Goose, Z.ai on OpenCode.

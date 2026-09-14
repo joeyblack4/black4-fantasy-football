@@ -1,0 +1,12 @@
+{
+  "environment": {
+    "FOOTBALL_LEAGUE_ID": "black4-fantasy-2026",
+    "FOOTBALL_PUBLIC_SCOREBOARD_CONFIG": "config/public-scoreboard.json",
+    "FOOTBALL_MFL_CONFIG_FILE": "/absolute/private/path/deployment.json",
+    "MFL_SESSION_FILE": "/absolute/private/path/session.json",
+    "FOOTBALL_PUBLIC_KV_FILE": "/absolute/private/path/kv.json"
+  },
+  "secretFiles": {
+    "DATABASE_URL": "/absolute/private/path/database-url.host"
+  }
+}

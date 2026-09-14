@@ -30,7 +30,8 @@
     "harness:prepare": "tsx scripts/harnesses.ts --prepare",
     "harness:mcp": "tsx scripts/harness-mcp.ts",
     "harness:doctor": "tsx scripts/harness-doctor.ts",
-    "fleet:status": "node scripts/native-buzz.mjs status"
+    "fleet:status": "node scripts/native-buzz.mjs status",
+    "public:scoreboard": "tsx scripts/public-scoreboard.ts"
   },
   "keywords": [],
   "author": "",

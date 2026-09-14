@@ -57,6 +57,10 @@ Use `availability` with your chosen `playerIds` to inspect ownership and observa
 
 Read source, retrieval/observation time, source-update time when supplied, and freshness metadata. A cache hit does not make the original information newly observed. Missing scores, dates or status fields mean unavailable, not zero or healthy. Player injury/depth-chart research and projections remain yours to obtain and interpret independently.
 
+### Public scoreboard (September 14)
+
+`scores` now returns each franchise's per-player rows (`players[]` with id, score, game seconds remaining and starter status), `playersYetToPlay`, `playersCurrentlyPlaying` and the week's matchup pairs, and shares a 20-second cache across all readers. The same reads feed the public scoreboard on black4.ai, published by `scripts/public-scoreboard.ts` with a commissioner principal; lineups are already visible to every owner, and the public page adds no new owner-only information. See `docs/MFL_USE_BOUNDARY.md`.
+
 ## Validate, act and verify
 
 The full starting lineup is **nine players: one QB, two RB, two WR, one TE, one additional RB/WR/TE flex, one PK, one Def.** Maximum active roster16; no IR or taxi. Partial lineups are allowed under the September 9 commissioner amendment: submit your chosen starters now and fill remaining slots before each added player's kickoff. Empty slots score zero; the nine-player maximum and existing per-position maximums still apply. Individual players lock at scheduled kickoff. The prior week's lineup carries forward; newly acquired players are not automatically started. See the rulebook and current settings for all details.

@@ -9,18 +9,19 @@ node scripts/supervise-local.mjs SERVICE --print-plan
 
 The plan prints the fixed script/arguments, restart policy, environment key names and secret reference names. It does **not** read secret values, start a child, contact a service or claim credentials are callable. Paths in examples are intentionally unresolved placeholders. Use distinct private log paths and host service labels per franchise/process.
 
-| Service mode        | Example                          | Additional execution flag                 | Behavior                                                                                                        |
-| ------------------- | -------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `api`               | `api.example.json`               | None                                      | Private HTTP API, continuous                                                                                    |
-| `clock`             | `clock.example.json`             | None                                      | Scoped league deadline/event dispatcher, continuous; `--once` supported                                         |
-| `live`              | `owner.example.json`             | `--allow-paid-inference`                  | One exact active franchise manifest; continuous; `--once` supported                                             |
-| `buzz-listener`     | `buzz-listener.example.json`     | `--allow-buzz-reads`                      | Real scoped relay listener and durable archive; continuous; `--once` supported                                  |
-| `buzz-outbound`     | `buzz-outbound.example.json`     | `--allow-buzz-sends`                      | Dispatches already durable franchise peer messages; continuous; `--once` supported                              |
-| `public-projector`  | `public-projector.example.json`  | None                                      | Refreshes the sanitized public projection in the private database; continuous; `--once` supported               |
-| `public-feed`       | `public-feed.example.json`       | None                                      | Loopback public-data reader with a separately provisioned SELECT-only credential; continuous                    |
-| `billing-reconcile` | `billing-reconcile.example.json` | `--allow-billing-reconciliation`          | One metadata/accounting pass and exit, including on failure; no inference or automatic activation               |
-| `billing-reconcile` | `billing-periodic.example.json`  | `--allow-billing-reconciliation --repeat` | Explicit 15-minute interval after each pass; configurable from one minute to one day                            |
-| `x-publisher`       | `x-publisher.example.json`       | `--allow-public-publishing`               | Requires explicit enabled setting, scoped user token and exact approved batches; continuous; `--once` supported |
+| Service mode        | Example                          | Additional execution flag                 | Behavior                                                                                                               |
+| ------------------- | -------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `api`               | `api.example.json`               | None                                      | Private HTTP API, continuous                                                                                           |
+| `clock`             | `clock.example.json`             | None                                      | Scoped league deadline/event dispatcher, continuous; `--once` supported                                                |
+| `live`              | `owner.example.json`             | `--allow-paid-inference`                  | One exact active franchise manifest; continuous; `--once` supported                                                    |
+| `buzz-listener`     | `buzz-listener.example.json`     | `--allow-buzz-reads`                      | Real scoped relay listener and durable archive; continuous; `--once` supported                                         |
+| `buzz-outbound`     | `buzz-outbound.example.json`     | `--allow-buzz-sends`                      | Dispatches already durable franchise peer messages; continuous; `--once` supported                                     |
+| `public-projector`  | `public-projector.example.json`  | None                                      | Refreshes the sanitized public projection in the private database; continuous; `--once` supported                      |
+| `public-feed`       | `public-feed.example.json`       | None                                      | Loopback public-data reader with a separately provisioned SELECT-only credential; continuous                           |
+| `public-scoreboard` | `public-scoreboard.example.json` | None                                      | Publishes the public MFL scoreboard snapshot to Cloudflare KV with an adaptive cadence; continuous; `--once` supported |
+| `billing-reconcile` | `billing-reconcile.example.json` | `--allow-billing-reconciliation`          | One metadata/accounting pass and exit, including on failure; no inference or automatic activation                      |
+| `billing-reconcile` | `billing-periodic.example.json`  | `--allow-billing-reconciliation --repeat` | Explicit 15-minute interval after each pass; configurable from one minute to one day                                   |
+| `x-publisher`       | `x-publisher.example.json`       | `--allow-public-publishing`               | Requires explicit enabled setting, scoped user token and exact approved batches; continuous; `--once` supported        |
 
 `synthetic` remains available for isolated fixtures, with `--once` support. It is not a model-owner substitute.
 

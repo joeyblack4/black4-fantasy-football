@@ -29,12 +29,14 @@ import {
   validateLineup,
   timestamp,
   text,
+  int,
   SEASON_INTERFACE_VERSION,
 } from "./season.js";
 const READ_CACHE_SECONDS: Record<string, number> = {
   players: 86400,
   rosters: 15,
   weeklyResults: 15,
+  liveScoring: 20,
   league: 300,
   rules: 3600,
   calendar: 300,
@@ -46,6 +48,25 @@ const READ_CACHE_SECONDS: Record<string, number> = {
   playoffBrackets: 300,
   playoffBracket: 60,
 };
+/** Reads about the whole league that a commissioner-role principal may perform without a franchise binding. */
+const LEAGUE_WIDE_READS = new Set([
+  "capabilities",
+  "leagueSettings",
+  "scoringRules",
+  "rules",
+  "teams",
+  "standings",
+  "calendar",
+  "lineups",
+  "results",
+  "scores",
+  "players",
+  "rosters",
+  "playoffBrackets",
+  "playoffBracket",
+  "waiverRules",
+  "transactions",
+]);
 type Franchise = MflConfig["franchises"][number];
 type Options = {
   writesEnabled?: boolean;
@@ -107,6 +128,16 @@ export class MflAdapter {
     if (actor.role !== "owner" || actor.leagueId !== this.config.leagueId || !f)
       throw new MflError("MFL_OWNER_BINDING_REQUIRED");
     return f;
+  }
+  /** Owners bind to their franchise; a same-league commissioner may perform league-wide reads unbound. */
+  private principalFranchise(actor: Principal, type: string): Franchise | null {
+    if (
+      actor.role === "commissioner" &&
+      actor.leagueId === this.config.leagueId &&
+      LEAGUE_WIDE_READS.has(type)
+    )
+      return null;
+    return this.bound(actor);
   }
   private async call(
     s: MflJournalSession,
@@ -745,8 +776,12 @@ export class MflAdapter {
     });
   }
   async read(actor: Principal, input: unknown) {
-    const f = this.bound(actor),
-      request = MflOwnerReadSchema.parse(input);
+    const request = MflOwnerReadSchema.parse(input),
+      f = this.principalFranchise(actor, request.type),
+      owner = (): Franchise => {
+        if (!f) throw new MflError("MFL_OWNER_BINDING_REQUIRED");
+        return f;
+      };
     return this.options.journal.withLock(this.scope, async (s) => {
       this.readSources = [];
       let data: any;
@@ -821,7 +856,7 @@ export class MflAdapter {
       } else if (request.type === "waiverRules") {
         data = await this.waiverRules(s);
       } else if (request.type === "validateBids") {
-        data = await this.validateBids(s, f, request);
+        data = await this.validateBids(s, owner(), request);
       } else if (request.type === "playoffBrackets") {
         const raw = await this.publicExport(s, "playoffBrackets");
         if (!raw.playoffBrackets) throw new MflError("MFL_RESPONSE_SHAPE");
@@ -875,7 +910,7 @@ export class MflAdapter {
             })),
         };
       } else if (request.type === "validateLineup")
-        data = await this.validate(s, f, request.week, request.starters);
+        data = await this.validate(s, owner(), request.week, request.starters);
       else if (request.type === "calendar") {
         const nfl = await this.publicExport(s, "nflSchedule", {
             W: String(request.week),
@@ -945,7 +980,7 @@ export class MflAdapter {
         const raw = await this.publicExport(
             s,
             "playerRosterStatus",
-            { P: request.playerIds.join(","), F: f.franchiseId },
+            { P: request.playerIds.join(","), F: owner().franchiseId },
             10,
           ),
           rosters = await this.allRosters(s),
@@ -1257,14 +1292,15 @@ export class MflAdapter {
               : null,
         };
       } else if (request.type === "budget") {
-        const raw = await this.exported(s, "league"),
+        const me = owner(),
+          raw = await this.exported(s, "league"),
           rows = list(raw?.league?.franchises?.franchise),
-          own = rows.find((r: any) => r.id === f.franchiseId);
+          own = rows.find((r: any) => r.id === me.franchiseId);
         if (!own) throw new MflError("MFL_EFFECTIVE_FRANCHISE_MISMATCH");
         const balance = own.bbidAvailableBalance;
         data = {
-          teamId: f.teamId,
-          franchiseId: f.franchiseId,
+          teamId: me.teamId,
+          franchiseId: me.franchiseId,
           unit: "FAAB",
           bbidAvailableBalance:
             typeof balance === "string" && /^-?\d+(\.\d+)?$/.test(balance)
@@ -1272,20 +1308,21 @@ export class MflAdapter {
               : null,
         };
       } else if (request.type === "roster") {
-        const roster = await this.roster(s, f, true),
+        const me = owner(),
+          roster = await this.roster(s, me, true),
           catalog = await this.playerCatalog(s);
         data = {
           ...roster,
           players: roster.players.map((p) => ({
             ...catalog.find((c) => c.id === p.id),
             ...p,
-            ownerTeamId: f.teamId,
-            ownerFranchiseId: f.franchiseId,
+            ownerTeamId: me.teamId,
+            ownerFranchiseId: me.franchiseId,
           })),
         };
       } else if (request.type === "rosters") data = await this.allRosters(s);
       else if (request.type === "lineup") {
-        data = await this.lineup(s, f, request.week, true);
+        data = await this.lineup(s, owner(), request.week, true);
         const catalog = await this.playerCatalog(s);
         data = {
           ...data,
@@ -1295,8 +1332,10 @@ export class MflAdapter {
             status: "starter",
           })),
         };
-      } else if (request.type === "pendingBids") data = await this.bids(s, f);
-      else if (request.type === "pendingTrades") data = await this.trades(s, f);
+      } else if (request.type === "pendingBids")
+        data = await this.bids(s, owner());
+      else if (request.type === "pendingTrades")
+        data = await this.trades(s, owner());
       else if (request.type === "draft")
         data = (await this.call(s, "draftStatic")).data;
       else if (request.type === "rules" || request.type === "scoringRules") {
@@ -1320,37 +1359,63 @@ export class MflAdapter {
           };
         }
       } else if (request.type === "scores") {
-        const raw = await this.exported(s, "liveScoring", {
+        const raw = await this.publicExport(s, "liveScoring", {
           W: String(request.week),
           DETAILS: "1",
         });
+        const rules = await this.seasonSettings(s);
+        // Per-player rows follow the same verified lineup visibility as `lineups`.
+        const showPlayers = rules.hideStarters === false;
+        const numeric = (v: unknown) =>
+          typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))
+            ? v
+            : null;
+        const known = (id: unknown) =>
+          this.config.franchises.some((f) => f.franchiseId === id);
+        const row = (r: any) => {
+          const players = list(r.players?.player);
+          if (players.some((p: any) => !/^\d{4,5}$/.test(String(p?.id ?? ""))))
+            throw new MflError("MFL_RESPONSE_SHAPE");
+          return {
+            teamId: this.config.franchises.find((f) => f.franchiseId === r.id)!
+              .teamId,
+            franchiseId: r.id,
+            score: numeric(r.score),
+            gameSecondsRemaining: r.gameSecondsRemaining ?? null,
+            playersYetToPlay: int(r.playersYetToPlay),
+            playersCurrentlyPlaying: int(r.playersCurrentlyPlaying),
+            players: showPlayers
+              ? players.map((p: any) => ({
+                  id: String(p.id),
+                  score: numeric(p.score),
+                  gameSecondsRemaining: int(p.gameSecondsRemaining),
+                  status:
+                    p.status === "starter"
+                      ? "starter"
+                      : p.status === "nonstarter"
+                        ? "nonstarter"
+                        : null,
+                }))
+              : null,
+          };
+        };
         data = {
           week: request.week,
           source: "mfl",
           sourceUpdatedAt: null,
           teams: this.franchiseRows(raw, "liveScoring")
-            .filter((r) =>
-              this.config.franchises.some((f) => f.franchiseId === r.id),
-            )
-            .map((r) => ({
-              teamId: this.config.franchises.find(
-                (f) => f.franchiseId === r.id,
-              )!.teamId,
-              franchiseId: r.id,
-              score:
-                typeof r.score === "string" &&
-                r.score.trim() !== "" &&
-                Number.isFinite(Number(r.score))
-                  ? r.score
-                  : null,
-              gameSecondsRemaining: r.gameSecondsRemaining ?? null,
-            })),
+            .filter((r) => known(r.id))
+            .map(row),
+          matchups: list(raw.liveScoring?.matchup)
+            .map((m: any) => list(m.franchise).map((r: any) => String(r.id)))
+            .filter((ids: string[]) => ids.length && ids.every(known)),
         };
       }
       const stamp = await s.recordRead({
         leagueId: this.config.leagueId,
-        teamId: f.teamId,
-        franchiseId: f.franchiseId,
+        teamId: f?.teamId ?? "commissioner",
+        franchiseId: f?.franchiseId ?? null,
+        actorRole: actor.role,
         request,
         resultHash: hash(data),
         synthetic: this.config.mode === "synthetic",
@@ -1358,7 +1423,7 @@ export class MflAdapter {
       return {
         ...stamp,
         leagueId: this.config.leagueId,
-        teamId: f.teamId,
+        teamId: f?.teamId ?? "commissioner",
         synthetic: this.config.mode === "synthetic",
         data,
         metadata: {

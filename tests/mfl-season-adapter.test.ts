@@ -83,6 +83,72 @@ function fixture(overrides: Record<string, unknown> = {}) {
         },
       },
       pendingTrades: { pendingTrades: {} },
+      liveScoring: {
+        liveScoring: {
+          week: u.searchParams.get("W"),
+          matchup: {
+            franchise: [
+              {
+                id: "0001",
+                score: "12.50",
+                gameSecondsRemaining: "1800",
+                playersYetToPlay: "0",
+                playersCurrentlyPlaying: "1",
+                players: {
+                  player: [
+                    {
+                      id: "10000",
+                      score: "12.50",
+                      gameSecondsRemaining: "1800",
+                      status: "starter",
+                    },
+                    {
+                      id: "10001",
+                      score: "",
+                      gameSecondsRemaining: "3600",
+                      status: "nonstarter",
+                    },
+                  ],
+                },
+              },
+              {
+                id: "0002",
+                score: "0.00",
+                gameSecondsRemaining: "3600",
+                playersYetToPlay: "0",
+                playersCurrentlyPlaying: "0",
+                players: { player: [] },
+              },
+            ],
+          },
+        },
+      },
+      leagueStandings: {
+        leagueStandings: {
+          franchise: [
+            {
+              id: "0001",
+              h2hw: "1",
+              h2hl: "0",
+              h2ht: "0",
+              h2hpct: "1.000",
+              pf: "100.50",
+              pa: "80.00",
+              all_play_pct: ".900",
+            },
+            {
+              id: "0002",
+              h2hw: "0",
+              h2hl: "1",
+              h2ht: "0",
+              h2hpct: ".000",
+              pf: "80.00",
+              pa: "100.50",
+              all_play_pct: ".100",
+            },
+          ],
+        },
+      },
       players: {
         players: {
           player: [
@@ -785,4 +851,118 @@ it("validates bids with the existing budget preflight and never claims upstream 
     issues: [{ code: "MFL_BID_BUDGET_REJECTED" }],
   });
   expect(calls).not.toContain("blindBidWaiverRequest");
+});
+
+it("scores keeps per-player live rows, counts and matchup pairs, and shares a short cache", async () => {
+  const { adapter, calls } = fixture();
+  const r = await adapter.read(actor, { type: "scores", week: 1 });
+  expect(r.data.teams[0]).toMatchObject({
+    teamId: "a",
+    franchiseId: "0001",
+    score: "12.50",
+    gameSecondsRemaining: "1800",
+    playersYetToPlay: 0,
+    playersCurrentlyPlaying: 1,
+  });
+  expect(r.data.teams[0].players).toEqual([
+    {
+      id: "10000",
+      score: "12.50",
+      gameSecondsRemaining: 1800,
+      status: "starter",
+    },
+    {
+      id: "10001",
+      score: null,
+      gameSecondsRemaining: 3600,
+      status: "nonstarter",
+    },
+  ]);
+  expect(r.data.teams[1].players).toEqual([]);
+  expect(r.data.matchups).toEqual([["0001", "0002"]]);
+  await adapter.read(actor, { type: "scores", week: 1 });
+  expect(calls.filter((c) => c === "liveScoring")).toHaveLength(1);
+});
+it("scores rejects malformed player ids instead of guessing", async () => {
+  const { adapter } = fixture({
+    liveScoring: {
+      liveScoring: {
+        franchise: [
+          { id: "0001", score: "1", players: { player: [{ id: "x" }] } },
+        ],
+      },
+    },
+  });
+  await expect(
+    adapter.read(actor, { type: "scores", week: 1 }),
+  ).rejects.toMatchObject({ code: "MFL_RESPONSE_SHAPE" });
+});
+const commissioner = {
+  id: "joey",
+  role: "commissioner" as const,
+  leagueId: "test",
+};
+it("a same-league commissioner may perform league-wide reads without a franchise binding", async () => {
+  const { adapter } = fixture();
+  for (const query of [
+    { type: "scores", week: 1 },
+    { type: "lineups", week: 1 },
+    { type: "results", week: 1 },
+    { type: "standings" },
+    { type: "calendar", week: 1 },
+    { type: "leagueSettings" },
+    { type: "teams" },
+    { type: "capabilities" },
+  ] as const) {
+    const r = await adapter.read(commissioner, query);
+    expect(r.teamId).toBe("commissioner");
+    expect(r.data).toBeTruthy();
+  }
+  const standings = await adapter.read(commissioner, { type: "standings" });
+  expect(standings.data.teams[0]).toMatchObject({
+    teamId: "a",
+    wins: "1",
+    pointsFor: "100.50",
+  });
+});
+it("commissioner principals stay out of franchise-private reads and every write", async () => {
+  const { adapter, calls } = fixture();
+  for (const query of [
+    { type: "pendingTrades" },
+    { type: "pendingBids" },
+    { type: "budget" },
+    { type: "roster" },
+    { type: "lineup", week: 1 },
+    { type: "validateLineup", week: 1, starters: ["10000"] },
+    { type: "availability", playerIds: ["10000"] },
+  ] as const) {
+    await expect(
+      adapter.read(commissioner, query as any),
+    ).rejects.toMatchObject({ code: "MFL_OWNER_BINDING_REQUIRED" });
+  }
+  await expect(
+    adapter.execute(commissioner, "c-write", {
+      type: "lineup",
+      week: 1,
+      starters: ["10000"],
+    }),
+  ).rejects.toMatchObject({ code: "MFL_OWNER_BINDING_REQUIRED" });
+  expect(calls).not.toContain("lineup");
+  await expect(
+    adapter.read(
+      { ...commissioner, leagueId: "other" },
+      { type: "scores", week: 1 },
+    ),
+  ).rejects.toMatchObject({ code: "MFL_OWNER_BINDING_REQUIRED" });
+  await expect(
+    adapter.read(
+      { id: "sys", role: "system", leagueId: "test" },
+      { type: "scores", week: 1 },
+    ),
+  ).rejects.toMatchObject({ code: "MFL_OWNER_BINDING_REQUIRED" });
+});
+it("owner reads keep their franchise stamp after the commissioner change", async () => {
+  const { adapter } = fixture();
+  const r = await adapter.read(actor, { type: "teams" });
+  expect(r.teamId).toBe("a");
 });
