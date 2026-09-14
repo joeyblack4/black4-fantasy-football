@@ -951,7 +951,26 @@ export class MflAdapter {
           rosters = await this.allRosters(s),
           catalog = await this.playerCatalog(s),
           waiverRules = await this.waiverRules(s);
+        const currentResults = await this.publicExport(s, "weeklyResults");
+        const scoringWeek = Number(currentResults.weeklyResults?.week);
+        if (
+          !Number.isInteger(scoringWeek) ||
+          scoringWeek < 1 ||
+          scoringWeek > 22
+        )
+          throw new MflError("MFL_CURRENT_WEEK_UNKNOWN");
+        const games = nflGames(
+          await this.publicExport(s, "nflSchedule", { W: String(scoringWeek) }),
+          scoringWeek,
+        );
         data = {
+          leagueTiming: {
+            source: "black4-commissioner-rule",
+            acquisitionLock: "individual-kickoff",
+            startedStarterDrops: "blocked",
+            startedBenchDrops: "allowed",
+            enforcement: "black4-owner-api; native-MFL-settings-differ",
+          },
           waiverRules: {
             type: waiverRules.type,
             windowStatus: waiverRules.windowStatus,
@@ -975,26 +994,40 @@ export class MflAdapter {
             const state = list(raw.playerRosterStatuses?.playerStatus).find(
               (r: any) => r.id === id,
             );
+            const player = catalog.find((p) => p.id === id);
+            const kickoff = games.find((g) =>
+              g.teams.includes(player?.nflTeam),
+            )?.kickoffAt;
+            const kickoffLocked = Boolean(
+              kickoff && Date.parse(kickoff) <= Date.now(),
+            );
             return {
-              ...catalog.find((p) => p.id === id),
+              ...player,
               id,
+              leagueAcquisitionLock: {
+                kickoffAt: kickoff ?? null,
+                locked: kickoffLocked ? true : kickoff ? false : null,
+              },
               ownerTeamId: owner?.teamId ?? null,
               ownerFranchiseId: owner?.franchiseId ?? null,
               availability: owner
                 ? "rostered"
-                : state?.error
-                  ? "ineligible"
-                  : state?.is_fa === "1" && state?.locked === "1"
-                    ? "locked"
-                    : state?.is_fa === "1" && state?.cant_add === "1"
-                      ? "restricted"
-                      : state?.is_fa === "1" &&
-                          state?.locked !== "1" &&
-                          state?.cant_add !== "1"
-                        ? "unowned"
-                        : "unknown",
+                : kickoffLocked
+                  ? "locked"
+                  : state?.error
+                    ? "ineligible"
+                    : state?.is_fa === "1" && state?.locked === "1"
+                      ? "locked"
+                      : state?.is_fa === "1" && state?.cant_add === "1"
+                        ? "restricted"
+                        : state?.is_fa === "1" &&
+                            state?.locked !== "1" &&
+                            state?.cant_add !== "1"
+                          ? "unowned"
+                          : "unknown",
               acquisition: {
                 canAcquireNow:
+                  kickoffLocked ||
                   owner ||
                   state?.error ||
                   state?.cant_add === "1" ||
@@ -1003,6 +1036,7 @@ export class MflAdapter {
                     : null,
                 fcfs: {
                   eligible:
+                    kickoffLocked ||
                     owner ||
                     state?.error ||
                     state?.locked === "1" ||
@@ -1012,13 +1046,15 @@ export class MflAdapter {
                       : null,
                   reason: owner
                     ? "already-rostered"
-                    : state?.locked === "1"
-                      ? "player-acquisition-lock"
-                      : state?.cant_add === "1" || state?.error
-                        ? "host-player-restriction"
-                        : waiverRules.observedWindowRestrictions.length
-                          ? "calendar-waivers-closed"
-                          : "player-flags-do-not-prove-host-acquisition-window",
+                    : kickoffLocked
+                      ? "league-kickoff-lock"
+                      : state?.locked === "1"
+                        ? "player-acquisition-lock"
+                        : state?.cant_add === "1" || state?.error
+                          ? "host-player-restriction"
+                          : waiverRules.observedWindowRestrictions.length
+                            ? "calendar-waivers-closed"
+                            : "player-flags-do-not-prove-host-acquisition-window",
                 },
                 leagueMode: waiverRules.type,
                 finalAuthority: "mfl-submission-and-readback",
@@ -1585,7 +1621,20 @@ export class MflAdapter {
       if (this.options.enforceSeasonRules ?? this.config.mode === "real") {
         if (a.type === "addDrop") {
           await this.requireWindow(s, "WAIVER_NONE");
-          await this.requireUnlocked(s, a.dropPlayerIds);
+          // Yahoo-style timing: bench drops are legal after kickoff, while
+          // new acquisitions and removal of current starters are not.
+          if (a.addPlayerId) await this.requireUnlocked(s, [a.addPlayerId]);
+          if (a.dropPlayerIds.length) {
+            const current = await this.exported(s, "weeklyResults");
+            const week = Number(current.weeklyResults?.week);
+            if (!Number.isInteger(week) || week < 1 || week > 22)
+              throw new MflError("MFL_CURRENT_WEEK_UNKNOWN");
+            const lineup = await this.lineup(s, f, week);
+            await this.requireUnlocked(
+              s,
+              a.dropPlayerIds.filter((id) => lineup.starters.includes(id)),
+            );
+          }
         }
         if (a.type === "replaceBids") {
           const rules = await this.seasonSettings(s, true);

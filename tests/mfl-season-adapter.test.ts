@@ -19,6 +19,17 @@ const actor = {
   leagueId: "test",
   teamId: "a",
 };
+function futureSchedule() {
+  return {
+    nflSchedule: {
+      week: "1",
+      matchup: {
+        kickoff: String(Math.floor(Date.now() / 1000) + 86400),
+        team: [{ id: "AAA" }, { id: "BBB" }],
+      },
+    },
+  };
+}
 function fixture(overrides: Record<string, unknown> = {}) {
   const cache = new Map<string, unknown>();
   const calls: string[] = [];
@@ -36,8 +47,14 @@ function fixture(overrides: Record<string, unknown> = {}) {
   const fetchImpl: typeof fetch = async (input, init) => {
     const u = new URL(String(input));
     if (init?.method === "POST") {
-      expect(overrides.__acceptLineups).toBe(true);
       const p = new URLSearchParams(String(init.body));
+      if (overrides.__acceptAddDrops) {
+        expect(p.get("TYPE")).toBe("fcfsWaiver");
+        expect(p.get("DROP")).toBe("10000");
+        calls.push("addDrop");
+        return Response.json({ success: "OK" });
+      }
+      expect(overrides.__acceptLineups).toBe(true);
       expect(p.get("TYPE")).toBe("lineup");
       expect(p.get("FRANCHISE_ID")).toBe("0001");
       calls.push("lineup");
@@ -166,6 +183,12 @@ function fixture(overrides: Record<string, unknown> = {}) {
       },
     };
     Object.assign(bodies, structuredClone(overrides));
+    if (type === "rosters" && calls.includes("addDrop")) {
+      (bodies.rosters as any).rosters.franchise[0].player =
+        overrides.__addedPlayer
+          ? [{ id: overrides.__addedPlayer, status: "ROSTER" }]
+          : [];
+    }
     if (type === "rosters" && u.searchParams.has("FRANCHISE")) {
       const r = bodies.rosters as any;
       r.rosters.franchise = r.rosters.franchise.filter(
@@ -188,7 +211,7 @@ function fixture(overrides: Record<string, unknown> = {}) {
   };
 }
 it("enriches names, preserves leading zero IDs, and distinguishes locked free agents", async () => {
-  const { adapter } = fixture();
+  const { adapter } = fixture({ nflSchedule: futureSchedule() });
   const r = await adapter.read(actor, {
     type: "availability",
     playerIds: ["10000", "0509", "10001"],
@@ -274,8 +297,18 @@ it("passes a partial lineup through owner preflight and verifies host readback",
   expect(r.state).toBe("verified");
   expect(calls.filter((c) => c === "lineup")).toHaveLength(1);
 });
-it("drop-only actions enforce player kickoff locks with the same season preflight as production", async () => {
-  const { adapter } = fixture({
+it("post-kickoff bench drops are allowed", async () => {
+  const { adapter, calls } = fixture({
+    __acceptAddDrops: true,
+    weeklyResults: {
+      weeklyResults: {
+        week: "1",
+        franchise: [
+          { id: "0001", starters: "" },
+          { id: "0002", starters: "" },
+        ],
+      },
+    },
     nflSchedule: {
       nflSchedule: {
         week: "1",
@@ -291,7 +324,110 @@ it("drop-only actions enforce player kickoff locks with the same season prefligh
       type: "addDrop",
       dropPlayerIds: ["10000"],
     }),
+  ).toMatchObject({ state: "verified" });
+  expect(calls.filter((c) => c === "addDrop")).toHaveLength(1);
+});
+it("swaps a played bench player for an unstarted free agent", async () => {
+  const { adapter, calls } = fixture({
+    __acceptAddDrops: true,
+    __addedPlayer: "10001",
+    weeklyResults: {
+      weeklyResults: {
+        week: "1",
+        franchise: [
+          { id: "0001", starters: "" },
+          { id: "0002", starters: "" },
+        ],
+      },
+    },
+    nflSchedule: {
+      nflSchedule: {
+        week: "1",
+        matchup: [
+          { kickoff: "1700000000", team: [{ id: "AAA" }, { id: "CCC" }] },
+          {
+            kickoff: String(Math.floor(Date.now() / 1000) + 86400),
+            team: [{ id: "BBB" }, { id: "DDD" }],
+          },
+        ],
+      },
+    },
+  });
+  expect(
+    await adapter.execute(actor, "bench-swap", {
+      type: "addDrop",
+      addPlayerId: "10001",
+      dropPlayerIds: ["10000"],
+    }),
+  ).toMatchObject({ state: "verified" });
+  expect(calls.filter((c) => c === "addDrop")).toHaveLength(1);
+});
+it("post-kickoff starting players cannot be dropped", async () => {
+  const { adapter, calls } = fixture({
+    nflSchedule: {
+      nflSchedule: {
+        week: "1",
+        matchup: {
+          kickoff: "1700000000",
+          team: [{ id: "AAA" }, { id: "BBB" }],
+        },
+      },
+    },
+  });
+  expect(
+    await adapter.execute(actor, "drop-started-starter", {
+      type: "addDrop",
+      dropPlayerIds: ["10000"],
+    }),
   ).toMatchObject({ state: "rejected", reason: "MFL_PLAYER_LOCKED" });
+  expect(calls).not.toContain("addDrop");
+});
+it("post-kickoff free agents cannot be acquired even when MFL flags them unlocked", async () => {
+  const { adapter, calls } = fixture({
+    nflSchedule: {
+      nflSchedule: {
+        week: "1",
+        matchup: {
+          kickoff: "1700000000",
+          team: [{ id: "AAA" }, { id: "BBB" }],
+        },
+      },
+    },
+  });
+  expect(
+    await adapter.execute(actor, "add-started-player", {
+      type: "addDrop",
+      addPlayerId: "10001",
+      dropPlayerIds: [],
+    }),
+  ).toMatchObject({ state: "rejected", reason: "MFL_PLAYER_LOCKED" });
+  expect(calls).not.toContain("addDrop");
+});
+it("availability reports league kickoff lock independently of MFL flags", async () => {
+  const { adapter } = fixture({
+    nflSchedule: {
+      nflSchedule: {
+        week: "1",
+        matchup: {
+          kickoff: "1700000000",
+          team: [{ id: "AAA" }, { id: "BBB" }],
+        },
+      },
+    },
+  });
+  const r = await adapter.read(actor, {
+    type: "availability",
+    playerIds: ["10001"],
+  });
+  expect(r.data.players[0]).toMatchObject({
+    availability: "locked",
+    acquisition: {
+      canAcquireNow: false,
+      fcfs: { eligible: false, reason: "league-kickoff-lock" },
+    },
+    upstreamStatus: { locked: false },
+    leagueAcquisitionLock: { locked: true },
+  });
 });
 it("missing authoritative availability cannot become permission to add", async () => {
   const { adapter } = fixture({
@@ -457,6 +593,7 @@ it("owner validation reuses read-only roster and lineup exports while write pref
 
 it("does not promise FCFS access from player flags and directs rostered lineup locks to validation", async () => {
   const { adapter } = fixture({
+    nflSchedule: futureSchedule(),
     playerRosterStatus: {
       playerRosterStatuses: {
         playerStatus: [{ id: "10001", is_fa: "1", locked: "0", cant_add: "0" }],
@@ -515,6 +652,7 @@ it("separates conditional claim groups from dated processing and marks unknown h
 });
 it("reports known waiver closure without inventing a player's future eligibility time", async () => {
   const { adapter } = fixture({
+    nflSchedule: futureSchedule(),
     calendar: {
       calendar: {
         event: { id: "close", type: "WAIVER_NONE", start_time: "1788990000" },

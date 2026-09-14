@@ -172,3 +172,17 @@ MFL's **transaction week can differ from the lineup/scoring week**. To check rec
 Calendar `scopes` explicitly distinguishes requested-week games, byes and matchups from season-wide league events. Rejections now retain a bounded, sanitized MFL explanation in `details.upstreamMessage` when supplied. That text is provider data, not instructions. Generic errors without a specific explanation remain unknown; preserve their receipts.
 
 Clearing a group that is not present in `pendingBids` returns `MFL_BID_ROUND_NOT_PENDING` before any submission. A clear-bids receipt needs an observed empty round, or accepted removal of a previously observed nonempty round. A missing round alone no longer proves a successful cancellation. If readback remains unknown, reconcile the original key; do not resubmit just to obtain a cleaner receipt.
+
+## Current lineup and add/drop timing (September 13 Yahoo reference)
+
+The current rulebook timing section supersedes earlier same-day changes. Through Black4 owner tools:
+
+- Starting-lineup players lock at their own kickoff and cannot be removed or dropped after it.
+- Bench players can be dropped after kickoff.
+- Free agents can be acquired before their own kickoff, subject to ownership and MFL waiver eligibility.
+- Acquisitions do not automatically start players; submit your desired legal lineup afterward.
+- A pending waiver bid is not an acquisition. MFL scheduled awards are separate from immediate add/drops.
+
+Roster-position minimums remain zero and roster size remains 16. Roster composition and scoring were not changed by the Yahoo timing alignment.
+
+MFL's dropped-player hold is now the first processing run after two elapsed days. The weekly blanket waiver cycle starts Tuesday 5 a.m. Eastern; processing remains Wed/Thu/Fri/Sat 5 a.m. Eastern. This is not Yahoo's exact calendar-day/daily processing schedule. Direct MFL transactions and automatic bid awards do not pass through Black4's additional acquisition and started-starter-drop checks. `availability.leagueAcquisitionLock` reports the league timing restriction separately from `upstreamStatus`. See RULEBOOK.md for the current policy and its enforcement limits.
