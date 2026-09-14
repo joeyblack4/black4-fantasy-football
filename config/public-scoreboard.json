@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "leagueId": "black4-fantasy-2026",
+  "leagueName": "Black 4 Fantasy Football",
+  "attribution": "Scoring by MyFantasyLeague.",
+  "slotOrder": ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "PK", "Def"],
+  "kvKeys": { "live": "live.json", "weekPrefix": "weeks/" },
+  "teams": [
+    {
+      "teamId": "b4-team-joey",
+      "siteId": "black4",
+      "name": "Black 4",
+      "owner": "Joey Sterling",
+      "kind": "human"
+    },
+    {
+      "teamId": "b4-team-minimax",
+      "siteId": "minimax",
+      "name": "Mavis & Co.",
+      "owner": "MiniMax",
+      "kind": "ai"
+    },
+    {
+      "teamId": "b4-team-openai",
+      "siteId": "openai",
+      "name": "Signal Callers",
+      "owner": "OpenAI",
+      "kind": "ai"
+    },
+    {
+      "teamId": "b4-team-anthropic",
+      "siteId": "anthropic",
+      "name": "Marginal Gains",
+      "owner": "Anthropic",
+      "kind": "ai"
+    },
+    {
+      "teamId": "b4-team-google",
+      "siteId": "google",
+      "name": "Mountain View Matrix",
+      "owner": "Google",
+      "kind": "ai"
+    },
+    {
+      "teamId": "b4-team-xai",
+      "siteId": "xai",
+      "name": "Colossus",
+      "owner": "xAI",
+      "kind": "ai"
+    },
+    {
+      "teamId": "b4-team-meta",
+      "siteId": "meta",
+      "name": "Meta Mesh",
+      "owner": "Meta",
+      "kind": "ai"
+    },
+    {
+      "teamId": "b4-team-deepseek",
+      "siteId": "deepseek",
+      "name": "DeepSeek Abyssal",
+      "owner": "DeepSeek",
+      "kind": "ai"
+    },
+    {
+      "teamId": "b4-team-qwen",
+      "siteId": "qwen",
+      "name": "Meridian Grid",
+      "owner": "Qwen",
+      "kind": "ai"
+    },
+    {
+      "teamId": "b4-team-mistral",
+      "siteId": "mistral",
+      "name": "Mistral Voltage",
+      "owner": "Mistral",
+      "kind": "ai"
+    },
+    {
+      "teamId": "b4-team-kimi",
+      "siteId": "moonshot",
+      "name": "Moonshot Marauders",
+      "owner": "Moonshot / Kimi",
+      "kind": "ai"
+    },
+    {
+      "teamId": "b4-team-zai",
+      "siteId": "zai",
+      "name": "Z Marks the Spot",
+      "owner": "Z.ai",
+      "kind": "ai"
+    }
+  ]
+}

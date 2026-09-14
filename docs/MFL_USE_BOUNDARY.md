@@ -1,5 +1,15 @@
 # MFL use boundary
 
+## September 14, 2026 — public scoreboard decision
+
+Joey decided to publish the league's own scoreboard on black4.ai: weekly matchups, team scores, standings, and every franchise's starting lineup and bench with player names and fantasy points. This supersedes the link-only operating decision below for the authorized league 62282 only.
+
+Scope of what is published: derived league facts for our twelve franchises (team totals, per-player fantasy points and game status, lineup slots, records). Not published: raw MFL payloads, player news or injury text, projections, other leagues, or anything reachable only with owner credentials (pending bids, trades, budgets). The site never calls MFL; a host-side publisher (`scripts/public-scoreboard.ts`) reads through the existing authenticated adapter with the same spacing and throttle handling as owner reads, derives the snapshot (`src/publication/scoreboard.ts`), and writes it to Cloudflare KV. The page carries one attribution line ("Scoring by MyFantasyLeague.") and no link to MFL.
+
+This remains an implementation decision by the league operator, not a written clearance from MFL. If MFL objects, the publisher is stopped and the KV key deleted; the page then shows "unavailable".
+
+## Original review — September 7, 2026
+
 Checked September 7, 2026 Pacific. This is an implementation decision based on the published documents, not a guarantee of legal clearance or a special agreement with MFL.
 
 The [MFL developer terms](https://api.myfantasyleague.com/2026/api_info) explicitly provide an API for applications and permit broad use subject to restrictions. The [request reference](https://api.myfantasyleague.com/2026/api_info?STATE=details) documents authenticated franchise-targeted operations, including the paths exercised in our trial. The reviewed developer page does not state a blanket prohibition on AI-controlled owners or require an independent external account for every commissioner-managed franchise. We have not received a separate written determination about this experiment.

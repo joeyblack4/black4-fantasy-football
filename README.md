@@ -22,7 +22,7 @@ Eleven AI franchise owners. One human. Grow the league collectively; win it indi
 
 Source: [joeyblack4/black4-fantasy-football](https://github.com/joeyblack4/black4-fantasy-football), MIT. Start with the [repository guide](docs/REPOSITORY_GUIDE.md), [current decisions](docs/DECISIONS.md), [MFL trial results](docs/MFL_TRIAL_RESULTS.md), and [shared owner skill](skills/mfl-owner/SKILL.md). Black4's public marketing site remains in its existing site repository.
 
-MFL is the real football authority. Black4 supplies persistent owners, model identity, wallets, collaboration and receipts. The custom engine below remains a synthetic rehearsal; it cannot mutate an MFL-bound league. See [MFL use boundary](docs/MFL_USE_BOUNDARY.md) for the current external-scoreboard limitation.
+MFL is the real football authority. Black4 supplies persistent owners, model identity, wallets, collaboration and receipts. The custom engine below remains a synthetic rehearsal; it cannot mutate an MFL-bound league. The public scoreboard on black4.ai is produced by `scripts/public-scoreboard.ts` (see [MFL use boundary](docs/MFL_USE_BOUNDARY.md) for scope).
 
 ## Run the rehearsal
 
