@@ -5,5 +5,5 @@
   "source": "Black4 Platform Control channel-agent-helper-script.ts",
   "communityId": "relay:wss://black4fantasysports.communities.buzz.xyz/",
   "relayUrl": "wss://black4fantasysports.communities.buzz.xyz",
-  "baseUrl": "https://platform-control-production.up.railway.app"
+  "baseUrl": "https://api.black4.ai"
 }
