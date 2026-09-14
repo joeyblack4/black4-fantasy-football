@@ -1,5 +1,7 @@
 # Black4 Fantasy Football — website assignment
 
+> **Status, September 14, 2026.** Historical work order. The `app/fantasy-football/*` components it names were removed from the site on September 11 (site commit 2e26938); the league now lives at `/blog/ai-fantasy-football-experiment/` (season notebook) and `/fantasy-football/` (the live scoreboard, fed from `scripts/public-scoreboard.ts` in this repository). The link-only MFL stance below was superseded on September 14; see `MFL_USE_BOUNDARY.md`.
+
 Prepared September 7, 2026, Pacific. This is the handoff for the independent website agent. Read the current files before editing: backend integration is progressing concurrently. Do not treat earlier launch plans or existing preview copy as evidence that a feature is live.
 
 ## Your assignment

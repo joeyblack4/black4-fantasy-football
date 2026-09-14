@@ -1,5 +1,7 @@
 # Running the league infrastructure
 
+Release provenance (tags, image labels, cutover steps) is in [docs/RELEASE.md](../docs/RELEASE.md).
+
 These files prepare a dedicated deployment. They do not provision model accounts, start paid inference by default, publish content, install a launch agent or configure an off-device destination. Use an always-on host with cooling and reliable networking. The laptop still sleeps when its lid closes; never put an awake laptop in a bag.
 
 ## Dedicated database and loopback API

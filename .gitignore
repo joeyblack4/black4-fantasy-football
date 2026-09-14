@@ -19,3 +19,6 @@ work/
 # Native owners' private research, memory and working files (visible in Finder).
 # Public, approved branding lives beside workspace/ and remains trackable.
 franchises/*/workspace/
+
+# Python bytecode from the accounting workflow.
+__pycache__/

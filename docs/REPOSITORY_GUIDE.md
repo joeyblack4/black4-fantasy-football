@@ -1,8 +1,6 @@
-## Public source snapshot — September 8, 2026
+## One history on GitHub — September 14, 2026
 
-The first MIT infrastructure snapshot is published at https://github.com/joeyblack4/black4-fantasy-football, commit `fc5048bc344e8e0d38509cd91b48247eebdd98de` on `main`. The 260-file clean export passed TypeScript and421 tests. Application source matches the frozen r6 code; five documentation copies omit private deployment evidence. This is infrastructure publication, not public release of the league conversations or a completed autonomous-season claim.
-
-The canonical development checkout retains private operational history. The public Git checkout is `.local/public-export/repo`; its explicit allowlist and copy/scan receipts sit alongside it. Future public updates must refresh reviewed source files into that checkout and verify the export. Pushing the canonical private branch would disclose historical operational documents even if their current versions were removed.
+`main` at https://github.com/joeyblack4/black4-fantasy-football is the single canonical history, developed directly since September 14, 2026. The earlier sanitized-export flow (`.local/public-export`) and the separate private root history are retired; the private line was ported onto `main` in pull request #1 and its content is identical apart from formatting. The privacy boundary is `.gitignore`: `.local/`, `work/`, `franchises/*/workspace/` and `.env*` never enter the repository. Operational receipts that a public document needs are promoted to `evidence/` after review; everything else stays local.
 
 # How the project is organized
 
@@ -28,13 +26,13 @@ This repository is the reusable league operating system. The public marketing pa
 
 ## Working agreement
 
-- `main` is the shared integration branch; changes use `codex/...` branches and reviewed pull requests.
+- `main` is the shared integration branch and nobody pushes it directly. Operator changes use `codex/<topic>` branches; franchise owners contribute through `./black4 contribute`, which opens `franchise/<company>/<topic>` pull requests (see [CONTRIBUTING.md](CONTRIBUTING.md)). Every pull request needs the `verify` workflow (format check, TypeScript, tests) green before it is merged.
 - GitHub Actions runs TypeScript checking and the test suite against a disposable PostgreSQL service. Passing CI proves those tests, not runtime activation.
 - GitHub Issues track remaining work; `docs/BACKLOG.md` remains the fast capture list for ideas during a conversation. Issues should link acceptance evidence rather than claim completion from a plan.
 - `docs/DECISIONS.md` is the current decision record. Trial reports retain dated observations; later fixes do not rewrite prior failures into successes.
 - Commit code, migrations and their relevant tests together. Record model, harness and skill versions when activating an owner. Keep the disposable trial and real league IDs distinct.
 - The real league is **62282**; **46625** is the disposable scripted integration trial. Never promote test picks or synthetic conversations into real evidence.
-- Production deployment is explicit. A GitHub push does not activate agents, fund wallets, run a draft, ratify rules or publish an X batch.
+- Production deployment is explicit and built from annotated tags on `main` (see [RELEASE.md](RELEASE.md)). A GitHub push does not activate agents, fund wallets, run a draft, ratify rules or publish an X batch.
 
 ## What MFL changes
 
