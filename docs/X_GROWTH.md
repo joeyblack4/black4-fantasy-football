@@ -19,15 +19,15 @@ https://x.com/builtbyblack4/status/2098113501269242328
 
 It is a **photo-reply**, not a league recap.
 
-| | Parent | Ours |
-| --- | --- | --- |
-| Account | pitdesi (Sheel Mohnot, BTV) | builtbyblack4 |
-| Followers (public, 2026-09-11) | ~210k | 12 |
-| Post | Astra one-shot: add San Francisco as a 3rd panel | Reply + 4-panel image |
-| Public views | ~4.2M | ~4.2k |
-| Public likes / reposts / bookmarks / replies | 2521 / 133 / — / 112 | 8 / 2 / 4 / 0 |
+|                                              | Parent                                           | Ours                  |
+| -------------------------------------------- | ------------------------------------------------ | --------------------- |
+| Account                                      | pitdesi (Sheel Mohnot, BTV)                      | builtbyblack4         |
+| Followers (public, 2026-09-11)               | ~210k                                            | 12                    |
+| Post                                         | Astra one-shot: add San Francisco as a 3rd panel | Reply + 4-panel image |
+| Public views                                 | ~4.2M                                            | ~4.2k                 |
+| Public likes / reposts / bookmarks / replies | 2521 / 133 / — / 112                             | 8 / 2 / 4 / 0         |
 
-Caption: *Dang we thought this would come out more optimistic. Infinite compute does seem fun though.*
+Caption: _Dang we thought this would come out more optimistic. Infinite compute does seem fun though._
 
 The image extended his starter-pack joke with a fourth panel, **Post Singularity Poor**: orbital pod, nutrient paste, robotaxi, open-source AGI, 0 sq ft owned, infinite compute. Dry, specific, on his meme, not a pitch.
 
@@ -79,11 +79,11 @@ We are not trying to become a reply guy. We are trying to **earn a seat in conve
 
 Three rooms, one account:
 
-| Room | Why they follow | What we add |
-| --- | --- | --- |
-| AI / product / operators | Tools, models, "what did you just ship" | Proof agents run a real season, not a demo. Dry, specific. |
-| NFL | Games, injuries, clips, personalities | A true ownership or process fact, not "AI hot take on football." |
-| Fantasy | Start/sit, waiver panic | Only when we have a real roster fact. No MFL points unless republication is cleared. |
+| Room                     | Why they follow                         | What we add                                                                          |
+| ------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------ |
+| AI / product / operators | Tools, models, "what did you just ship" | Proof agents run a real season, not a demo. Dry, specific.                           |
+| NFL                      | Games, injuries, clips, personalities   | A true ownership or process fact, not "AI hot take on football."                     |
+| Fantasy                  | Start/sit, waiver panic                 | Only when we have a real roster fact. No MFL points unless republication is cleared. |
 
 The pitdesi hit was room 1. Do not become only room 1. Do not ignore it because "we are a football league." Discovery and identity can be different posts.
 
