@@ -31,34 +31,46 @@ const env = {
   FOOTBALL_AGENT_ID: id,
   FOOTBALL_TEAM_ID: config.teamId,
 };
-const entry =
-  mode === "mcp"
-    ? "src/mcp.ts"
-    : mode === "observations"
-      ? "scripts/harness-mcp.ts"
-      : "src/cli.ts";
-const cliArgs =
-  mode === "mcp" || mode === "observations"
-    ? []
-    : [
-        mode,
-        ...(mode === "state" && !args.length
-          ? [config.leagueId]
-          : mode === "agent" && !args.length
-            ? [id]
-            : args),
-      ];
-const child = spawn(
-  join(root, "node_modules/.bin/tsx"),
-  [join(root, entry), ...cliArgs],
-  { env, stdio: "inherit" },
-);
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
-  process.on(signal, () => child.kill(signal));
-child.on("error", (error) => {
-  console.error(error.message);
-  process.exitCode = 1;
-});
-child.on("exit", (code) => {
-  process.exitCode = code ?? 1;
-});
+if (mode === "contribute") {
+  // Contribution lane: never runs git in the shared checkout; see docs/CONTRIBUTING.md.
+  const child = spawn(
+    process.execPath,
+    [join(root, "scripts/franchise-contribute.mjs"), id, ...args],
+    { env, stdio: "inherit" },
+  );
+  child.on("exit", (code) => {
+    process.exitCode = code ?? 1;
+  });
+} else {
+  const entry =
+    mode === "mcp"
+      ? "src/mcp.ts"
+      : mode === "observations"
+        ? "scripts/harness-mcp.ts"
+        : "src/cli.ts";
+  const cliArgs =
+    mode === "mcp" || mode === "observations"
+      ? []
+      : [
+          mode,
+          ...(mode === "state" && !args.length
+            ? [config.leagueId]
+            : mode === "agent" && !args.length
+              ? [id]
+              : args),
+        ];
+  const child = spawn(
+    join(root, "node_modules/.bin/tsx"),
+    [join(root, entry), ...cliArgs],
+    { env, stdio: "inherit" },
+  );
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
+    process.on(signal, () => child.kill(signal));
+  child.on("error", (error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+  child.on("exit", (code) => {
+    process.exitCode = code ?? 1;
+  });
+}
