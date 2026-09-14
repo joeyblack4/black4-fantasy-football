@@ -1,0 +1,186 @@
+diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
+index aea2426ff..73a9d3cce 100644
+--- a/crates/buzz-acp/src/lib.rs
++++ b/crates/buzz-acp/src/lib.rs
+@@ -3909,6 +3909,14 @@ fn is_auth_error(error: &acp::AcpError) -> bool {
+     message.contains("Re-authenticate") || message.contains("API Error: 401")
+ }
+ 
++/// Native loop protection is a deterministic turn stop, not a transient failure.
++/// ACP currently retains only the error code and message, so match Qwen's
++/// specific message rather than broad words such as "limit" or "loop".
++fn is_native_loop_limit(error: &acp::AcpError) -> bool {
++    matches!(error, acp::AcpError::AgentError { code: -32603, message }
++        if message == "Tool-call loop protection stopped this turn. The session is still available; send a more specific instruction to continue.")
++}
++
+ /// Spawn a task that posts a user-visible failure notice to the relay.
+ ///
+ /// Shared by the hard-cap immediate dead-letter path and the retries-exhausted
+@@ -4065,6 +4073,21 @@ fn handle_prompt_result(
+                     and then re-send."
+                     .to_string();
+                 spawn_failure_notice(rest_client, &batch, content);
++            } else if matches!(&result.outcome, PromptOutcome::Error(e) if is_native_loop_limit(e))
++            {
++                // Replaying this same request consumes another bounded turn
++                // without addressing the deterministic failure. Leave a visible
++                // receipt and allow independent work to proceed instead.
++                tracing::warn!(
++                    channel_id = %batch.channel_id,
++                    events = batch.events.len(),
++                    "dead-lettering batch immediately — native tool-call loop limit"
++                );
++                let content = "⚠️ Native tool-call loop protection stopped the last request. \
++                    It was not automatically retried. The next request will use a fresh session; \
++                    narrow unfinished work into a specific task. Earlier actions may already have completed."
++                    .to_string();
++                spawn_failure_notice(rest_client, &batch, content);
+             } else if let Some(dead) = queue.requeue(batch) {
+                 let reason = match &result.outcome {
+                     PromptOutcome::Timeout(TimeoutKind::Idle) => "the turn timed out".to_string(),
+@@ -4314,6 +4337,11 @@ fn handle_prompt_result(
+                     "agent_returned (application error — pipe intact)"
+                 );
+                 emit_turn_error(&e.to_string(), error_code);
++                if is_native_loop_limit(e) {
++                    // Keep the healthy transport and other channels, but do not
++                    // carry an exhausted native session into independent work.
++                    result.agent.state.invalidate(&result.source);
++                }
+                 pool.return_agent(result.agent);
+             }
+         }
+@@ -8360,6 +8388,29 @@ mod error_outcome_emission_tests {
+         );
+     }
+ 
++    #[test]
++    fn native_loop_limit_classifier_preserves_unrelated_errors() {
++        let message = "Tool-call loop protection stopped this turn. The session is still available; send a more specific instruction to continue.";
++        assert!(is_native_loop_limit(&acp::AcpError::AgentError {
++            code: -32603,
++            message: message.into(),
++        }));
++        for (code, text) in [
++            (-32000, message),
++            (-32603, "Rate limit exceeded"),
++            (-32603, "LOOP_DETECTED in user input"),
++            (-32603, "Temporary service error"),
++        ] {
++            assert!(!is_native_loop_limit(&acp::AcpError::AgentError {
++                code,
++                message: text.into(),
++            }));
++        }
++        assert!(!is_native_loop_limit(&acp::AcpError::Io(
++            std::io::Error::other(message)
++        )));
++    }
++
+     // ── auth error dead-letter behavior ────────────────────────────────────
+ 
+     /// An auth-class `PromptOutcome::Error` must dead-letter immediately
+@@ -8449,6 +8500,102 @@ mod error_outcome_emission_tests {
+         );
+     }
+ 
++    #[tokio::test]
++    async fn native_loop_limit_dead_letters_and_rotates_only_failed_session() {
++        let keys = nostr::Keys::generate();
++        let event = nostr::EventBuilder::new(nostr::Kind::Custom(9), "test")
++            .sign_with_keys(&keys)
++            .unwrap();
++        let channel_id = uuid::Uuid::new_v4();
++        let batch = FlushBatch {
++            channel_id,
++            events: vec![BatchEvent {
++                event,
++                prompt_tag: "test".into(),
++                received_at: std::time::Instant::now(),
++            }],
++            cancelled_events: vec![],
++            cancel_reason: None,
++        };
++
++        let native_error = acp::AcpError::AgentError {
++            code: -32603,
++            message: "Tool-call loop protection stopped this turn. The session is still available; send a more specific instruction to continue."
++                .to_string(),
++        };
++
++        let mut agent = dummy_agent(0).await;
++        let other_channel = uuid::Uuid::new_v4();
++        agent.state.sessions.insert(channel_id, "exhausted".into());
++        agent.state.turn_counts.insert(channel_id, 12);
++        agent.state.sessions.insert(other_channel, "healthy".into());
++        let mut pool = AgentPool::from_slots(vec![None]);
++        let task_id = pool.join_set.spawn(async {}).id();
++        pool.task_map_mut().insert(
++            task_id,
++            crate::pool::TaskMeta {
++                agent_index: 0,
++                channel_id: None,
++                turn_id: "test-turn-id".to_string(),
++                recoverable_batch: None,
++                control_tx: None,
++                steer_tx: None,
++                successful_steer_deliveries: HashSet::new(),
++            },
++        );
++        let mut queue = EventQueue::new(config::DedupMode::Queue);
++        let config = test_config();
++        let mut heartbeat_in_flight = false;
++        let removed_channels = std::collections::HashSet::new();
++        let mut crash_history = vec![SlotCircuit {
++            crash_times: Vec::new(),
++            open_until: None,
++            respawn_in_flight: false,
++        }];
++        let (respawn_tx, _respawn_rx) = mpsc::channel(8);
++        let mut respawn_tasks = tokio::task::JoinSet::new();
++        let result = PromptResult {
++            agent,
++            source: PromptSource::Channel(channel_id),
++            turn_id: "test-turn-id".to_string(),
++            outcome: PromptOutcome::Error(native_error),
++            batch: Some(batch),
++        };
++        handle_prompt_result(
++            &mut pool,
++            &mut queue,
++            &config,
++            result,
++            &mut heartbeat_in_flight,
++            &removed_channels,
++            &mut crash_history,
++            &respawn_tx,
++            &mut respawn_tasks,
++            None,
++            None,
++        );
++
++        // The batch must not be requeued: pending_channels returns 0.
++        assert_eq!(
++            queue.pending_channels(),
++            0,
++            "native loop limit must dead-letter immediately — batch must not be requeued"
++        );
++        assert_eq!(
++            queue.queued_event_count(&channel_id),
++            0,
++            "native loop limit must dead-letter immediately — no events should be pending"
++        );
++        let returned = pool.agents_mut()[0].as_ref().unwrap();
++        assert!(!returned.state.sessions.contains_key(&channel_id));
++        assert!(!returned.state.turn_counts.contains_key(&channel_id));
++        assert_eq!(
++            returned.state.sessions.get(&other_channel).unwrap(),
++            "healthy"
++        );
++        assert!(respawn_tasks.is_empty());
++    }
++
+     /// A non-auth application error (e.g. usage credits) must still follow the
+     /// standard requeue path so today's behavior is unchanged.
+     #[tokio::test]

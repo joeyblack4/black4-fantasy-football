@@ -476,3 +476,49 @@ it("accepts only two active private streams with their exact two exclusive membe
     mocks.spawn.mock.calls.every((call) => call[1][0] === "channels"),
   ).toBe(true);
 });
+
+it("permits configured observers while requiring the owner and notifier in both private inboxes", async () => {
+  runningOwner();
+  for (const channel of [
+    config.owners.team.channelId,
+    config.owners.team.queueChannelId,
+  ]) {
+    privateChannelMetadata(channel);
+    childResult([
+      { pubkey: config.owners.team.pubkey },
+      { pubkey: config.notifierPubkey },
+      { pubkey: "authorized-observer" },
+    ]);
+  }
+  expect(
+    await nativeBuzzScheduleTransport(
+      { ...config, observerPubkeys: ["authorized-observer"] },
+      {},
+    ).inspectOwner(input),
+  ).toMatchObject({ status: "ready" });
+});
+
+it.each([
+  ["unknown member", ["owner-key", "trusted-notifier", "unknown-observer"]],
+  ["missing owner", ["trusted-notifier", "authorized-observer"]],
+  ["missing notifier", ["owner-key", "authorized-observer"]],
+  [
+    "duplicate observer",
+    [
+      "owner-key",
+      "trusted-notifier",
+      "authorized-observer",
+      "authorized-observer",
+    ],
+  ],
+])("observer configuration still rejects %s", async (_, keys) => {
+  runningOwner();
+  privateChannelMetadata(config.owners.team.channelId);
+  childResult((keys as string[]).map((pubkey) => ({ pubkey })));
+  expect(
+    await nativeBuzzScheduleTransport(
+      { ...config, observerPubkeys: ["authorized-observer"] },
+      {},
+    ).inspectOwner(input),
+  ).toMatchObject({ status: "unavailable" });
+});

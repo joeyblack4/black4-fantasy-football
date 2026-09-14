@@ -7,6 +7,8 @@ export type NativeBuzzScheduleConfig = {
   leagueId: string;
   relayUrl: string;
   notifierPubkey: string;
+  /** Explicitly authorized read-only observers may share private appointment streams. */
+  observerPubkeys?: string[];
   appDataDirectory: string;
   executable: string;
   owners: Record<
@@ -221,18 +223,24 @@ export function nativeBuzzScheduleTransport(
             "--channel",
             channelId,
           ]);
+          const requiredMembers = [owner.pubkey, config.notifierPubkey];
+          const allowedMembers = new Set([
+            ...requiredMembers,
+            ...(config.observerPubkeys ?? []),
+          ]);
           if (
             !Array.isArray(members) ||
-            members.length !== 2 ||
-            new Set(members.map((row: any) => row.pubkey)).size !== 2 ||
-            !members.every((row: any) =>
-              [owner.pubkey, config.notifierPubkey].includes(row.pubkey),
-            )
+            new Set(members.map((row: any) => row?.pubkey)).size !==
+              members.length ||
+            !requiredMembers.every((pubkey) =>
+              members.some((row: any) => row?.pubkey === pubkey),
+            ) ||
+            !members.every((row: any) => allowedMembers.has(row?.pubkey))
           )
             return {
               status: "unavailable",
               reason:
-                "Appointment inbox membership differs from its private owner and infrastructure binding",
+                "Appointment inbox membership differs from its private owner, infrastructure, and authorized observer binding",
             };
         }
         // This means the transport can queue, not that the model is idle. A separate

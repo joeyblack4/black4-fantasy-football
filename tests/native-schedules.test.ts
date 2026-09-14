@@ -455,3 +455,176 @@ it("persists the lane before uncertain network I/O and reconciles or retries tha
   expect(attempted).toEqual([0, 0]);
   expect(reconciled).toEqual([0]);
 });
+
+it("operator recovery releases a stranded delivery without rewriting owner schedules or claiming owner execution", async () => {
+  const created = await schedules.command(actor, due);
+  const {
+    occurrenceIds: [occurrenceId],
+  } = await schedules.materializeDue(actor.leagueId);
+  await schedules.dispatchOne(actor.leagueId, transport());
+  await schedules.command(actor, { ...due, idempotencyKey: "second" });
+  await schedules.materializeDue(actor.leagueId);
+  let sends = 0;
+  const sender = transport({
+    send: async ({ occurrenceId }) => {
+      sends++;
+      return { eventId: occurrenceId };
+    },
+  });
+  await schedules.dispatchOne(actor.leagueId, sender);
+  expect(sends).toBe(0);
+  const commissioner: Principal = {
+    id: "repair",
+    role: "commissioner",
+    leagueId: actor.leagueId,
+  };
+  const request = {
+    teamId: actor.teamId,
+    occurrenceId,
+    idempotencyKey: "repair",
+    expectedStatus: "delivered",
+    expectedEventId: occurrenceId,
+    reason: "Appointment window missed",
+    transportEvidence:
+      "Synthetic rejected-event receipt; no queued or running turn",
+  };
+  await expect(schedules.failOccurrence(actor, request)).rejects.toThrow(
+    /commissioner/,
+  );
+  await expect(
+    schedules.failOccurrence(
+      { ...commissioner, leagueId: "different" },
+      request,
+    ),
+  ).rejects.toThrow(/belongs/);
+  await expect(
+    schedules.failOccurrence(commissioner, {
+      ...request,
+      expectedEventId: "different",
+    }),
+  ).rejects.toThrow(/changed/);
+  const result = await schedules.failOccurrence(commissioner, request);
+  expect(result.evidence.source).toBe("operator-recovery");
+  expect(result.evidence.ownerExecutionVerified).toBe(false);
+  expect(await schedules.failOccurrence(commissioner, request)).toEqual(result);
+  await expect(
+    schedules.failOccurrence(commissioner, { ...request, reason: "changed" }),
+  ).rejects.toThrow(/different recovery/);
+  await expect(
+    schedules.command(actor, {
+      operation: "acknowledge",
+      idempotencyKey: "late",
+      occurrenceId,
+      state: "failed",
+    }),
+  ).rejects.toThrow(/cannot be replaced/);
+  const original = (await schedules.read(actor)).schedules.find(
+    (row: { id: string }) => row.id === created.id,
+  );
+  expect(original?.version).toBe(1);
+  expect(original?.status).toBe("active");
+  await schedules.dispatchOne(actor.leagueId, sender);
+  expect(sends).toBe(1);
+});
+
+it("operator recovery refuses started work and safely closes a reviewed queued occurrence", async () => {
+  await schedules.command(actor, due);
+  const {
+    occurrenceIds: [occurrenceId],
+  } = await schedules.materializeDue(actor.leagueId);
+  const commissioner: Principal = {
+    id: "repair",
+    role: "commissioner",
+    leagueId: actor.leagueId,
+  };
+  const request = {
+    teamId: actor.teamId,
+    occurrenceId,
+    idempotencyKey: "repair",
+    expectedStatus: "queued",
+    expectedEventId: null,
+    reason: "Expired appointment",
+    transportEvidence:
+      "No dispatch attempt or event; confirmed in occurrence receipt",
+  };
+  await schedules.failOccurrence(commissioner, request);
+  let sends = 0;
+  await schedules.dispatchOne(
+    actor.leagueId,
+    transport({
+      send: async () => {
+        sends++;
+        return { eventId: "bad" };
+      },
+    }),
+  );
+  expect(sends).toBe(0);
+  await schedules.command(actor, { ...due, idempotencyKey: "started" });
+  const started = (await schedules.materializeDue(actor.leagueId))
+    .occurrenceIds[0];
+  await schedules.dispatchOne(actor.leagueId, transport());
+  await schedules.command(actor, {
+    operation: "acknowledge",
+    occurrenceId: started,
+    state: "started",
+    idempotencyKey: "start",
+  });
+  await expect(
+    schedules.failOccurrence(commissioner, {
+      ...request,
+      occurrenceId: started,
+      idempotencyKey: "reject-started",
+      expectedStatus: "delivered",
+      expectedEventId: started,
+    }),
+  ).rejects.toThrow(/changed or execution started/);
+});
+
+it("recovery cannot race an in-flight transport send using an obsolete queued snapshot", async () => {
+  await schedules.command(actor, due);
+  const {
+    occurrenceIds: [occurrenceId],
+  } = await schedules.materializeDue(actor.leagueId);
+  let begin!: () => void;
+  let finish!: () => void;
+  const sending = new Promise<void>((resolve) => {
+    begin = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const dispatch = schedules.dispatchOne(
+    actor.leagueId,
+    transport({
+      send: async () => {
+        begin();
+        await gate;
+        return { eventId: "accepted-event" };
+      },
+    }),
+  );
+  await sending;
+  const repair = schedules.failOccurrence(
+    { id: "repair", role: "commissioner", leagueId: actor.leagueId },
+    {
+      teamId: actor.teamId,
+      occurrenceId,
+      idempotencyKey: "race",
+      expectedStatus: "queued",
+      expectedEventId: null,
+      reason: "Missed",
+      transportEvidence: "Obsolete queued snapshot",
+    },
+  );
+  const assertion = expect(repair).rejects.toThrow(
+    /changed or execution started/,
+  );
+  finish();
+  await dispatch;
+  await assertion;
+  const state = (await schedules.read(actor)).occurrences.find(
+    (row: { id: string }) => row.id === occurrenceId,
+  );
+  expect(state?.status).toBe("delivered");
+  expect(state?.event_id).toBe("accepted-event");
+});

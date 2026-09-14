@@ -199,6 +199,108 @@ export function nextNativeScheduleTime(
 
 export class NativeSchedules {
   constructor(readonly db: Db) {}
+  /** Close a specifically reviewed missed occurrence; never infer failure from age alone. */
+  async failOccurrence(actor: Principal, raw: unknown) {
+    if (actor.role !== "commissioner")
+      fail(
+        403,
+        "COMMISSIONER_REQUIRED",
+        "Occurrence recovery requires a commissioner.",
+      );
+    const input = z
+      .object({
+        teamId: z.string().min(1),
+        occurrenceId: z.string().min(1),
+        idempotencyKey: z.string().min(1).max(200),
+        expectedStatus: z.enum(["queued", "blocked", "delivered"]),
+        expectedEventId: z.string().min(1).nullable(),
+        reason: z.string().min(1).max(2000),
+        transportEvidence: z.string().min(1).max(2000),
+      })
+      .strict()
+      .parse(raw);
+    return transaction(this.db, async (tx) => {
+      const key = `${actor.leagueId}:${input.teamId}`;
+      // Same order as dispatch: hold its franchise lane before the command lane.
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,7047))",
+        [key],
+      );
+      await tx.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,7045))",
+        [key],
+      );
+      const commandKey = `operator-fail:${input.idempotencyKey}`;
+      const payloadHash = hash({
+        operation: "operator-fail",
+        actorId: actor.id,
+        ...input,
+      });
+      const replay = (
+        await tx.query(
+          "SELECT * FROM runtime_native_schedule_commands WHERE league_id=$1 AND team_id=$2 AND idempotency_key=$3",
+          [actor.leagueId, input.teamId, commandKey],
+        )
+      ).rows[0];
+      if (replay) {
+        if (replay.payload_hash !== payloadHash)
+          fail(
+            409,
+            "IDEMPOTENCY_CONFLICT",
+            "This key already identifies different recovery evidence.",
+          );
+        return replay.result;
+      }
+      const row = (
+        await tx.query(
+          "SELECT * FROM runtime_native_schedule_occurrences WHERE id=$1 AND league_id=$2 AND team_id=$3 FOR UPDATE",
+          [input.occurrenceId, actor.leagueId, input.teamId],
+        )
+      ).rows[0];
+      if (!row)
+        fail(
+          404,
+          "OCCURRENCE_NOT_FOUND",
+          "No occurrence with this ID belongs to this franchise.",
+        );
+      if (
+        row.status !== input.expectedStatus ||
+        row.event_id !== input.expectedEventId ||
+        row.started_at
+      )
+        fail(
+          409,
+          "RECOVERY_STATE_CONFLICT",
+          "Occurrence changed or execution started; inspect it before recovery.",
+        );
+      if (row.status === "delivered" && !row.event_id)
+        fail(
+          409,
+          "RECOVERY_STATE_CONFLICT",
+          "Delivered occurrence lacks transport identity.",
+        );
+      const evidence = {
+        source: "operator-recovery",
+        actorId: actor.id,
+        eventId: row.event_id,
+        previousStatus: row.status,
+        reason: input.reason,
+        transportEvidence: input.transportEvidence,
+        // This receipt makes no claim that the owner ran or acknowledged work.
+        ownerExecutionVerified: false,
+      };
+      await tx.query(
+        "UPDATE runtime_native_schedule_occurrences SET status='failed',reason=$2,execution_evidence=$3,completed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1",
+        [row.id, input.reason, evidence],
+      );
+      const result = { occurrenceId: row.id, status: "failed", evidence };
+      await tx.query(
+        "INSERT INTO runtime_native_schedule_commands(league_id,team_id,idempotency_key,payload_hash,result) VALUES($1,$2,$3,$4,$5)",
+        [actor.leagueId, input.teamId, commandKey, payloadHash, result],
+      );
+      return result;
+    });
+  }
   async command(actor: Principal, raw: unknown) {
     const teamId = owner(actor),
       input = nativeScheduleCommandSchema.parse(raw);
@@ -246,6 +348,12 @@ export class NativeSchedules {
             409,
             "EXECUTION_TRANSITION_INVALID",
             "Only delivered work can be acknowledged.",
+          );
+        if (occurrence.execution_evidence?.source === "operator-recovery")
+          fail(
+            409,
+            "EXECUTION_TRANSITION_INVALID",
+            "Operator recovery evidence cannot be replaced by an owner acknowledgement.",
           );
         const evidence = {
           source: "owner-acknowledged",
