@@ -12,8 +12,8 @@ import type { Principal } from "../src/auth.js";
 import { loadMflAdapter } from "../src/mfl/service.js";
 import {
   ScoreboardConfigSchema,
-  KvCredentialSchema,
-  KvPublisher,
+  KvTargetSchema,
+  kvWriterFor,
   ScoreboardError,
   buildSnapshot,
   intervalFor,
@@ -74,8 +74,8 @@ process.env.FOOTBALL_MFL_CONFIG_FILE ??= resolve(
 process.env.MFL_SESSION_FILE ??= resolve(".local/live/mfl/session.json");
 const publisher = dryRun
   ? null
-  : new KvPublisher(
-      KvCredentialSchema.parse(
+  : kvWriterFor(
+      KvTargetSchema.parse(
         await privateJson(
           resolve(
             process.env.FOOTBALL_PUBLIC_KV_FILE ??

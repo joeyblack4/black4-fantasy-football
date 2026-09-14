@@ -560,9 +560,23 @@ export const KvCredentialSchema = z
     token: z.string().min(20).max(400),
   })
   .strict();
+/** Alternative: write through the operator's logged-in wrangler CLI in the site checkout; no API token is stored. */
+export const WranglerKvSchema = z
+  .object({
+    mode: z.literal("wrangler"),
+    namespaceId: z.string().regex(/^[a-f0-9]{32}$/),
+    wranglerDir: z.string().min(1),
+  })
+  .strict();
+export const KvTargetSchema = z.union([KvCredentialSchema, WranglerKvSchema]);
+export type KvTarget = z.infer<typeof KvTargetSchema>;
+export interface KvWriter {
+  put(key: string, body: string): Promise<{ key: string; bytes: number }>;
+}
+export const KV_KEY = /^(?!.*\.\.)[a-z0-9][a-z0-9./-]{0,99}$/;
 
 /** Writes snapshot bodies to Cloudflare Workers KV through the REST API. The token never appears in errors or logs. */
-export class KvPublisher {
+export class KvPublisher implements KvWriter {
   constructor(
     private credential: KvCredential,
     private fetchImpl: typeof fetch = fetch,
@@ -572,8 +586,7 @@ export class KvPublisher {
     body: string,
     contentType = "application/json",
   ): Promise<{ key: string; bytes: number }> {
-    if (!/^(?!.*\.\.)[a-z0-9][a-z0-9./-]{0,99}$/.test(key))
-      throw new ScoreboardError("KV_KEY_INVALID", { key });
+    if (!KV_KEY.test(key)) throw new ScoreboardError("KV_KEY_INVALID", { key });
     const url = `https://api.cloudflare.com/client/v4/accounts/${this.credential.accountId}/storage/kv/namespaces/${this.credential.namespaceId}/values/${encodeURIComponent(key)}`;
     let response: Response;
     try {
@@ -600,4 +613,87 @@ export class KvPublisher {
       });
     return { key, bytes: Buffer.byteLength(body, "utf8") };
   }
+}
+
+/**
+ * Writes through `wrangler kv key put --remote` in the site checkout, using the operator's
+ * existing wrangler login. Runs the CLI with an argument array (no shell) and a temp file.
+ */
+export class WranglerKvPublisher implements KvWriter {
+  constructor(
+    private target: z.infer<typeof WranglerKvSchema>,
+    private run: (
+      file: string,
+      args: string[],
+      options: { cwd: string },
+    ) => Promise<{ code: number; stderr: string }> = defaultRun,
+  ) {}
+  async put(
+    key: string,
+    body: string,
+  ): Promise<{ key: string; bytes: number }> {
+    if (!KV_KEY.test(key)) throw new ScoreboardError("KV_KEY_INVALID", { key });
+    const { writeFile, mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = await mkdtemp(join(tmpdir(), "black4-scoreboard-"));
+    const file = join(dir, "snapshot.json");
+    try {
+      await writeFile(file, body, { mode: 0o600 });
+      const result = await this.run(
+        "npx",
+        [
+          "--no-install",
+          "wrangler",
+          "kv",
+          "key",
+          "put",
+          "--remote",
+          "--namespace-id",
+          this.target.namespaceId,
+          key,
+          "--path",
+          file,
+        ],
+        { cwd: this.target.wranglerDir },
+      );
+      if (result.code !== 0)
+        throw new ScoreboardError("KV_PUT_FAILED", {
+          key,
+          tool: "wrangler",
+          stderr: result.stderr.slice(-300),
+        });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    return { key, bytes: Buffer.byteLength(body, "utf8") };
+  }
+}
+async function defaultRun(
+  file: string,
+  args: string[],
+  options: { cwd: string },
+) {
+  const { execFile } = await import("node:child_process");
+  return new Promise<{ code: number; stderr: string }>((resolve) => {
+    execFile(
+      file,
+      args,
+      { cwd: options.cwd, timeout: 60_000, env: { ...process.env, CI: "1" } },
+      (error, _stdout, stderr) =>
+        resolve({
+          code: error
+            ? typeof (error as any).code === "number"
+              ? (error as any).code
+              : 1
+            : 0,
+          stderr: String(stderr ?? ""),
+        }),
+    );
+  });
+}
+export function kvWriterFor(target: KvTarget): KvWriter {
+  return "mode" in target
+    ? new WranglerKvPublisher(target)
+    : new KvPublisher(target);
 }
