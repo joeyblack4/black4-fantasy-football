@@ -165,13 +165,26 @@ it("polls with commissioner authority and creates exactly one urgent owner job w
     ),
   ).rejects.toThrow("DRAFT_OBSERVER_COMMISSIONER_REQUIRED");
   await configure();
-  const results = await Promise.all([
-    observer.poll(commissioner),
-    observer.poll(commissioner),
-  ]);
+  // Promise.all alone does not guarantee overlapping leases: a fast first
+  // observation can finish before the second claim reaches PostgreSQL.
+  let releaseRead!: () => void, startedRead!: () => void;
+  const readHeld = new Promise<void>((resolve) => (releaseRead = resolve));
+  const readStarted = new Promise<void>((resolve) => (startedRead = resolve));
+  duringRead = async () => {
+    startedRead();
+    await readHeld;
+  };
+  const firstPoll = observer.poll(commissioner);
+  const competingPoll = readStarted
+    .then(() => observer.poll(commissioner))
+    .finally(() => releaseRead());
+  const results = await Promise.all([firstPoll, competingPoll]);
+  expect(results.map((r) => r.status)).toEqual(["woken", "busy"]);
   expect(results.filter((r) => r.status === "woken")).toHaveLength(1);
   expect(calls).toBe(1);
+  duringRead = undefined;
   expect((await observer.poll(commissioner)).status).toBe("unchanged");
+  expect(calls).toBe(2);
   const rows = (
     await f.db.query("SELECT agent_id,priority,payload FROM runtime_jobs")
   ).rows;
