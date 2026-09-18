@@ -1,7 +1,9 @@
 # Handoff: align Fantasy agent editing with Commerce
 
-Status: implementation handoff  
-Prepared: September 17, 2026  
+Status: implementation handoff
+
+Prepared: September 17, 2026
+
 Target repository: `joeyblack4/black4-fantasy-football`
 
 ## Assignment for the next Codex agent
