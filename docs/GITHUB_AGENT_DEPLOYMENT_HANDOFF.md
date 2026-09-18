@@ -1,307 +1,154 @@
-# Handoff: align Fantasy agent editing with Commerce
-
-Status: implementation handoff
-
-Prepared: September 17, 2026
-
-Target repository: `joeyblack4/black4-fantasy-football`
-
-## Assignment for the next Codex agent
-
-Make the eleven Fantasy franchise agents as easy to update through GitHub as
-the six Commerce agents, while preserving the Fantasy league's separate Mac,
-native harnesses, private owner workspaces, league scheduling, model
-assignments, credentials, and current in-season work.
-
-Do not design a new deployment system. Finish and document the one that already
-exists in `joeyblack4/black4-agents`.
-
-Before changing anything, read:
-
-1. this repository's `AGENTS.md`;
-2. `docs/DEPLOYMENT_TOPOLOGY.md`;
-3. `docs/NATIVE_FLEET_LIVE.md`;
-4. `docs/NATIVE_SCHEDULING.md`;
-5. `docs/SEASON_OPERATIONS.md`; and
-6. the root `README.md` and `AGENTS.md` in `joeyblack4/black4-agents`.
-
-## Desired operator experience
-
-```text
-Codex, Cursor, Claude, or GitHub editor
-                  │
-                  ▼
-     edit black4-agents or black4-skills
-                  │
-          validate and push main
-                  ▼
-      league Mac checks every minute
-                  │
-                  ▼
- existing Buzz identities receive the change
-                  │
-                  ▼
-       verify a real response in Buzz
-```
-
-Humans should not need to locate the league Mac's live agent folders, edit them
-over SSH, or run a release-manager process for an ordinary instruction or skill
-change.
-
-## State found during this handoff
-
-Verified directly on the league Mac on September 17, 2026:
-
-- The production machine is separate from the development workstation.
-- All eleven Buzz owner workers were running.
-- LaunchAgent `ai.black4.agent-deploy` was installed, healthy, and scheduled
-  every 60 seconds.
-- Its deployment receipt reported the current GitHub revisions for
-  `black4-agents` and `black4-skills`.
-- `black4-agents` already contains all eleven Fantasy agent definitions,
-  `targetMachine: "fantasy"` settings, exact Buzz identities, model bindings,
-  workspace mappings, and the trusted Fantasy manifest.
-- The deployed agent reconciler reads `origin/main` snapshots. The working
-  checkout itself may remain behind even while deployed files are current.
-- The eleven live instruction files were managed by the reconciler.
-- The league Mac had the required Git, Node 22, npm, Python, uv, Codex, Claude,
-  and GitHub CLI tools.
-
-This means GitHub-to-Mac agent deployment is already operating. The task is to
-make it complete, symmetric, safe to develop from, and accurately documented.
-
-## Important gaps and contradictions
-
-### 1. The live guide is stale
-
-The league Mac's `START HERE.md` and
-`black4-agents/machines/fantasy/START-HERE.md` still say updates are manual,
-host-only, and not automatically synchronized. That is no longer true.
-
-Commerce already deploys Git-managed workspace guidance from:
-
-```text
-black4-agents/machines/commerce/workspace/
-```
-
-Fantasy has no equivalent managed workspace directory yet, so the stale guide
-survives even though automatic deployment is active.
-
-### 2. The installed Fantasy reconciler is older than the repository version
-
-The running reconciler predates the current shared implementation. It deploys
-`ABOUT.md`, `INSTRUCTIONS.md`, and skills, but it does not yet deploy the full
-supported `agent.json` configuration or Git-managed workspace guidance.
-
-Do not simply overwrite it and assume parity. Review the current shared
-reconciler's restart behavior first. Fantasy native harnesses load shared skills
-at owner-turn start, so a skill-only change should not automatically terminate
-eleven unrelated in-flight owner turns. Agent instruction or runtime-setting
-changes still require the existing safe Buzz apply-and-verify path.
-
-### 3. The source checkouts are clean but behind their remote branches
-
-The reconciler correctly deploys archives from `origin/main`, but the local
-`AgentDefinitions` and `SkillDefinitions` branches are behind. As a result,
-`scripts/check-dev-ready.sh` fails its push dry-run even though production files
-are current.
-
-If those checkouts are clean, fast-forward them explicitly. Do not reset or
-replace a dirty checkout. Decide whether to retain the compatible legacy paths
-or move them to the shared `.system/sources/` layout only after an exact
-before/after canary.
-
-### 4. The production Fantasy Football checkout is dirty
-
-The league Mac's `Black4/Fantasy/Repository` was at the same commit as
-`origin/main`, but it contained material modified, deleted, backup, and
-untracked runtime work. The development workstation also has substantial
-uncommitted Fantasy work.
-
-Treat every existing change as owner or production work. Do not run `reset`,
-`clean`, mass checkout, broad deletion, or automatic `git pull` there. Capture
-an inventory and recoverable snapshot before deciding which changes belong in
-Git, quarantine, runtime state, or a separate branch.
-
-Agent-definition deployment and full Fantasy application deployment are
-separate problems. Finish agent-definition parity without making the dirty
-production application checkout auto-update.
-
-## Ownership model to preserve
-
-| State | Canonical owner |
-| --- | --- |
-| Portable owner identity and instructions | `joeyblack4/black4-agents` |
-| Reusable shared methods | `joeyblack4/black4-skills` |
-| League source, rules, common owner charter, and application code | `joeyblack4/black4-fantasy-football` |
-| Private owner work and memory | Each owner workspace on the league Mac |
-| Live Buzz identity, start, stop, restart, and native execution | Buzz on the league Mac |
-| Football truth and transactions | MyFantasyLeague through the authenticated league interface |
-| Durable owner-selected appointments and receipts | The existing Fantasy scheduler and PostgreSQL state |
-| Credentials, model accounts, and provider state | Their existing private machine or provider owners |
-
-Do not copy private owner workspaces, credentials, transcripts, schedules,
-databases, pending bids, trades, or runtime memory into `black4-agents` or
-`black4-skills`.
-
-## Required implementation
-
-### A. Make Fantasy workspace guidance Git-managed
-
-Add the Fantasy equivalent of the Commerce managed workspace files:
-
-```text
-black4-agents/machines/fantasy/workspace/AGENTS.md
-black4-agents/machines/fantasy/workspace/START-HERE.md
-black4-agents/machines/fantasy/workspace/AGENTS-README.md
-```
-
-The guide should state:
-
-- GitHub `main` is the editing source for portable definitions and skills;
-- the league Mac is the runtime;
-- the Mac checks for valid changes every minute;
-- live identities and private owner workspaces remain local and are preserved;
-- an ordinary instruction change restarts through the existing Buzz apply path;
-- a skill-only change becomes available to later owner turns without restarting
-  unrelated owners;
-- common league rules and source belong in this repository, not in an agent
-  prompt; and
-- a live Buzz response—not a PID alone—proves an agent update works.
-
-Replace or retire `machines/fantasy/START-HERE.md` so it cannot compete with the
-managed guide.
-
-### B. Bring the Fantasy reconciler onto one reviewed shared implementation
-
-Use the reconciler in `black4-agents` as the source. Preserve these
-Fantasy-specific rules:
-
-- validate the exact trusted eleven-identity manifest;
-- reject new or identity-changing folders before touching the runtime;
-- deploy `ABOUT.md`, `INSTRUCTIONS.md`, and supported `agent.json` fields;
-- deploy only declared heartbeat files when an owner intentionally has one;
-- deploy shared skills without deleting private runtime state;
-- deploy managed workspace guidance;
-- do not deploy `black4-customers` to the Fantasy Mac;
-- restart only when the changed input requires it;
-- verify all eleven workers and their exact instruction bindings after a
-  restart; and
-- write one honest deployment receipt naming the Git revisions and changed
-  files.
-
-Do not add another daemon or scheduler. Continue using
-`ai.black4.agent-deploy` and the existing Buzz apply command.
-
-### C. Restore a genuinely development-ready source checkout
-
-On the league Mac, after proving each source checkout is clean:
-
-1. fetch its remote;
-2. fast-forward the local branch to `origin/main`;
-3. run `black4-agents/scripts/check-dev-ready.sh`;
-4. fix only demonstrated missing tools or authentication;
-5. prove `gh`, Git fetch, and push dry-run without publishing a test commit; and
-6. retain the one-minute deployer's use of immutable `origin/main` snapshots.
-
-Being able to deploy from the remote is not the same as being able to develop
-and push from the machine. Prove both separately.
-
-### D. Keep Fantasy scheduling separate from deployment
-
-Do not copy Lucky's Commerce customer-work heartbeat onto all Fantasy owners.
-Fantasy already has two distinct wake mechanisms:
-
-- native harness/session scheduling; and
-- owner-controlled durable appointments in the league scheduler.
-
-Preserve owner autonomy: no default cadence, lineup choice, waiver check, or
-shared tactical prompt. A future periodic owner heartbeat must be an explicit
-league design decision with cost, football-deadline, duplicate-action, and
-receipt semantics—not a side effect of Git deployment parity.
-
-### E. Document ordinary edits and new identities
-
-Document these paths clearly:
-
-- Existing owner instruction: edit
-  `black4-agents/agents/fantasy/<owner>/INSTRUCTIONS.md`.
-- Existing owner runtime setting: edit only supported `agent.json` fields.
-- Shared method: edit one canonical skill in `black4-skills`.
-- League-wide rule or interface: edit `black4-fantasy-football`.
-- New owner identity: create and verify it through Buzz first, then add its
-  portable definition and trusted manifest entry. Git must not invent a live
-  identity.
-
-## Safe execution order
-
-1. Inventory both current dirty worktrees and the live deployment receipt.
-2. Back up only the exact files that will change.
-3. Update `black4-agents` validation and Fantasy workspace guidance.
-4. Test the reconciler against a temporary fixture or dry-run copy.
-5. Install the reviewed reconciler on the league Mac without changing any
-   agent definition.
-6. Confirm a no-change run reports `current`, all eleven workers remain up, and
-   no owner workspace, schedule, credential, or model binding changed.
-7. Push one harmless instruction marker for one owner, let the one-minute poll
-   apply it, and verify that exact owner gives a real Buzz response reflecting
-   the change.
-8. Revert the marker through GitHub and verify the second deployment.
-9. Push one harmless skill canary and prove a later owner turn can use it
-   without an unnecessary eleven-owner restart.
-10. Update this repository's topology and fleet documentation with the final
-    receipts and remaining limitations.
-
-## Acceptance tests
-
-Do not call this complete until all are true:
-
-- `black4-agents/scripts/verify.sh` passes for 11 Fantasy and 6 Commerce
-  definitions.
-- The league Mac passes `scripts/check-dev-ready.sh` from a clean,
-  fast-forwarded checkout.
-- The installed reconciler hash matches the reviewed repository version.
-- A no-change poll reports the current agent and skill revisions.
-- A GitHub instruction change reaches one exact owner within the documented
-  poll interval.
-- The existing Buzz identity, pubkey, model, runtime profile, and workspace are
-  unchanged.
-- The intended owner produces a real response using the new instruction.
-- The Git revert reaches the same owner.
-- A skill-only update does not restart unrelated in-flight owners.
-- All eleven workers remain correctly bound after a required restart.
-- Private workspaces, schedules, credentials, conversations, football state,
-  and production application changes are byte-for-byte or semantically
-  unchanged outside the exact canary.
-- The live `START HERE.md` accurately names GitHub as the editable source and
-  the league Mac as the runtime.
-
-## Explicit non-goals
-
-- Do not clean or auto-deploy the dirty production Fantasy application
-  checkout as part of this task.
-- Do not merge or publish unrelated workstation changes.
-- Do not create a release-manager process.
-- Do not add a second file-sync system, scheduler, identity registry,
-  credential store, or agent-memory service.
-- Do not place private owner state in Git.
-- Do not standardize the eleven owners' strategies, native tools, or schedules.
-- Do not interpret running processes as proof of model execution.
-
-## Final handoff format
-
-Report these separately:
-
-1. repository commits and whether they reached `main`;
-2. installed league-Mac revisions and reconciler hash;
-3. files changed on the league Mac;
-4. whether Buzz restarted, and why;
-5. eleven-worker and exact-binding verification;
-6. real owner response evidence;
-7. skill-only no-restart evidence;
-8. preserved dirty-work inventory and recovery location; and
-9. anything still configured but not demonstrated end to end.
-
-Use the words `configured`, `deployed`, `delivered`, `started`, `completed`, and
-`football-state verified` precisely. Missing evidence is `UNKNOWN`, never a
-successful assumption.
+# Fantasy Git-managed deployment — completed handoff
+
+Verified September 17, 2026, America/Los_Angeles (September 18 UTC).
+
+Fantasy now uses the same GitHub editing model as Commerce: authorized teammates
+edit portable definitions or shared skills, validate, commit, and push main.
+The existing one-minute poller applies valid changes on the appropriate Mac.
+
+## What to edit
+
+| Change                                                            | Canonical source                                        | Destination                     |
+| ----------------------------------------------------------------- | ------------------------------------------------------- | ------------------------------- |
+| Fantasy owner instructions                                        | `black4-agents/agents/fantasy/<owner>/INSTRUCTIONS.md`  | Fantasy Mac only                |
+| Commerce agent instructions                                       | `black4-agents/agents/commerce/<agent>/INSTRUCTIONS.md` | Commerce Mac only               |
+| Supported owner configuration                                     | The same folder's `agent.json`                          | Assigned Mac only               |
+| Shared method                                                     | `black4-skills/.agents/skills/<skill>/SKILL.md`         | Both Macs, full library         |
+| Fantasy workspace guidance                                        | `black4-agents/machines/fantasy/workspace/`             | Fantasy Mac                     |
+| League rules, native harness integration, owner tools, scheduling | `black4-fantasy-football`                               | Separate application deployment |
+| Private owner work, sessions, and memory                          | Existing native workspace/runtime                       | Stays on its owning Mac         |
+
+A GitHub source checkout can contain both fleet directories; that does not run
+both fleets on either machine. The trusted local machine designation selects
+only its fleet. A Fantasy-only change normally yields a Commerce no-change
+check. Fantasy does not fetch or deploy customer records.
+
+The small owner folders are intentional: they contain portable maintained
+inputs, not the owner's accumulated work. Existing Buzz identities, model
+assignments, native harnesses, private workspaces, credentials, and appointments
+remain attached to their current owners.
+
+## Daily workflow
+
+1. Update a clean development checkout from main; keep experiments in a separate
+   branch or worktree, never the deployed inputs.
+2. Edit the intended files. For agents, run `scripts/verify.sh` and
+   `python3 -m unittest discover -s tests`. For skills, run `npm test`.
+3. Commit only the intended change and push main. Direct main pushes remain the
+   normal workflow. Integrate concurrent changes and rerun checks if a push is
+   rejected; never force-push shared main.
+4. Inspect the target Mac's deployment receipt, then verify the intended owner
+   through its existing Buzz identity. A successful push or PID alone is not a
+   completed model response.
+
+Ordinary source editing does not require production SSH. On-machine development
+readiness is independently verified; being able to fetch for deployment is not
+proof that a teammate can push.
+
+## Installed behavior
+
+- The existing `ai.black4.agent-deploy` remains on a 60-second interval. It uses
+  immutable Git revisions and does not pull or clean the Fantasy application.
+- The reviewed shared reconciler validates applicable definitions, guides, and
+  skills before active writes. Failed apply commands do not become success.
+- Fantasy deploys `ABOUT.md`, `INSTRUCTIONS.md`, `agent.json`, managed guides,
+  and only explicitly declared heartbeat files. No owner heartbeat was added.
+- Identity, model, native profile, workspace, enabled, response mode, and
+  parallelism remain fixed validated bindings. Optional declared heartbeat
+  settings are the supported variable runtime fields in this version; copying
+  a new model name is not an implemented model migration.
+- Fantasy instruction/runtime changes use the existing whole-Fantasy-Buzz
+  quit/apply/reopen path. Skill-only and reference-guide changes do not restart
+  Fantasy owners. Stopped owners or unrelated active identities defer restart
+  before changing files; the helper no longer disables unrelated identities.
+- Commerce's installed reconciler and apply helper were not replaced. Its
+  existing skill-change fleet restart behavior was observed and retained.
+- Machine guides now name GitHub as the editing source. Owner ABOUT references
+  no longer prescribe manual host edits.
+
+## Published source and deployed revisions
+
+| Repository      | Revision                                   | Meaning                                           |
+| --------------- | ------------------------------------------ | ------------------------------------------------- |
+| `black4-agents` | `b741791e1a8be8d58f38b4d58f61811cba3b82f5` | Parity implementation, tests, guides, and roadmap |
+| `black4-agents` | `201d363507c53451729ff621913552f24a956584` | Temporary one-owner instruction canary            |
+| `black4-agents` | `c1f5a9bf6ef65cea2c2c396dc677c11917829f8f` | Canary reverted; final deployed agent revision    |
+| `black4-skills` | `b635170b7f293b2816a56dd21dda79140424c76d` | Temporary shared-skill canary                     |
+| `black4-skills` | `8810ba3bc05c218899483e27135e139f3ec4c5e9` | Canary reverted; final deployed skill revision    |
+
+All these commits reached main. The shared skill's final content is restored to
+its original bytes. Documentation in this repository is not an application
+release to the league Mac.
+
+Installed Fantasy reconciler SHA-256:
+`09e1db55621209f4df5dd9f386aebc335b3405544383be952b6be4519d267c86`.
+Installed Fantasy apply helper SHA-256:
+`97ae5692f50f5bd9da7dd6c3c20e5661ac4ad9eefe2f0f46a076ae09a5c80fe0`.
+Both match the reviewed repository files.
+
+## Verification receipts
+
+- Local validation passed for six Commerce and eleven Fantasy definitions;
+  ten deployment tests passed. GitHub Actions passed for implementation and
+  instruction-canary commits. Skills validation passed eleven tests and 33 skills.
+- The Fantasy source checkouts were clean and fast-forwarded in place.
+  `check-dev-ready.sh` passed, including tools, GitHub CLI authentication as
+  `joeyblack4`, fetch, agent push dry-run, and read-only runtime checks. The skills
+  push dry-run also passed. Its existing read-only SSH fetch key remains in use;
+  developer pushes use the authenticated HTTPS route.
+- Initial configuration/reference/guide deployment changed no Fantasy worker
+  PIDs. The instruction canary changed exactly one owner's instructions and
+  restarted the Fantasy fleet. All eleven exact native bindings verified.
+- Signal Callers returned the unique token from its updated instruction file in
+  a private operator-created test channel. After Git revert, it reread the file
+  and confirmed the temporary section was absent. Replies were authored by the
+  original OpenAI Buzz identity, not scripted owner messages.
+- Commerce recorded no changed files for the Fantasy instruction revision;
+  all six Commerce worker PIDs remained unchanged during that canary.
+- The shared skill canary reached both Macs. Signal Callers read its new token
+  on a later turn. All eleven Fantasy PIDs stayed unchanged across both the
+  skill update and its revert. Commerce restarted under its existing policy.
+- Both Macs byte-verified all 191 published files across 33 skills with zero
+  mismatches. Final receipts reported `current`, empty changed-file lists, and
+  the final agent/skill revisions above.
+- The dirty production application's HEAD/status and all 525 inventoried source
+  files were unchanged. All 6,414 inventoried private workspace/credential files
+  were unchanged. Managed identity/model/harness/start settings were unchanged;
+  only normal last-started/updated timestamps changed after required restarts.
+- PostgreSQL read-back found 45 durable appointments, zero newly created or
+  updated appointments, and zero schedule commands during the verification
+  window. No football transaction was requested by any canary.
+- Temporary instruction and skill markers were reverted through Git. The
+  private canary channel was archived with its evidence retained.
+
+These tests establish deployed files, exact runtime bindings, and completed
+native responses for the tested owner. They do not claim a fresh response from
+all eleven models, a football-state change, a reboot recovery test, or a
+performance/load benchmark of the poller.
+
+## Recovery locations and scope
+
+Private inventories, exact pre-change backups, per-stage receipts, message
+read-backs, and preservation reports are retained on each Mac under
+`~/Black4/.system/deployments/fantasy-parity-20260918/`.
+The developer workstation retains isolated worktrees and evidence under
+`~/Black4/Operations/fantasy-git-parity-20260918/`.
+Do not commit raw private backups, credentials, or workspace contents.
+
+The production Fantasy application checkout was not cleaned, reset, or updated.
+Existing workstation changes were preserved in place; implementation used clean
+worktrees. Content rollback is a Git revert. Deployment-helper recovery restores
+only scoped files from the pre-install backup, never old databases or owner work.
+
+## Deferred roadmap
+
+1. GitHub Actions-triggered deployment over the private network, with lightweight
+   recovery checks instead of full one-minute reconciliation.
+2. Consistent skill-only no-restart behavior on both Macs, managed skill removal,
+   and rollback support.
+3. A unified deployment-status command and streamlined teammate onboarding.
+4. Broader private-state recovery coverage and retirement of obsolete
+   runtime-to-Git publishing utilities.
+
+No new deployment service, default owner schedules, shared football strategy,
+spending limits, subscriptions, or customer workflow was introduced.
