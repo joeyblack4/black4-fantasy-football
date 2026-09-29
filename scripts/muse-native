@@ -1,0 +1,9 @@
+#!/bin/sh
+# Thin native launch policy. Muse owns planning, tools, helpers and session state.
+set -eu
+: "${B4_MUSE_BINARY:?Missing pinned Muse binary}"
+if [ "${1:-}" = exec ]; then
+  shift
+  exec "$B4_MUSE_BINARY" exec --yolo --no-foreign-personal-context "$@"
+fi
+exec "$B4_MUSE_BINARY" "$@"

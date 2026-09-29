@@ -89,21 +89,12 @@
       "credentialEnv": "OPENROUTER_API_KEY"
     },
     "b4-meta": {
-      "harness": "goose",
-      "command": ".local/tooling/bin/goose",
-      "args": [
-        "acp",
-        "--with-builtin",
-        "developer"
-      ],
+      "harness": "muse-code",
+      "command": "tooling/muse/node_modules/.bin/muse-code-acp",
+      "args": [],
       "model": "muse-spark-1.3",
-      "credential": "B4_LEAGUE_NATIVE_META",
-      "credentialEnv": "META_MODEL_API_KEY",
-      "env": {
-        "GOOSE_PROVIDER": "meta",
-        "GOOSE_MODEL": "muse-spark-1.3",
-        "GOOSE_MODE": "auto"
-      }
+      "billing": "subscription",
+      "env": {}
     },
     "b4-deepseek": {
       "harness": "goose",
