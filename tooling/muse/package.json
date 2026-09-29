@@ -1,0 +1,8 @@
+{
+  "name": "black4-muse-connection",
+  "private": true,
+  "description": "Pinned ACP transport for the native Muse Code franchise",
+  "dependencies": {
+    "@bex-co/muse-code-acp": "0.7.0"
+  }
+}

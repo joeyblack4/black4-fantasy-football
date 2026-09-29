@@ -1,0 +1,7 @@
+{
+  "version": "1.4.1-R4380.1",
+  "binary": ".local/tooling/muse-native/bin/muse-bin-1.4.1-R4380.1",
+  "darwinArm64Sha256": "af15ef05a7b78f798d6d0ada79f90bc5c06b6b56e8dfdd2a332b1243268c161d",
+  "adapter": "@bex-co/muse-code-acp@0.7.0",
+  "backend": "exec"
+}

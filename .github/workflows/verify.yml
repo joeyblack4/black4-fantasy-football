@@ -31,4 +31,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run format:check
+      - run: node --test tests/muse-launch.test.mjs
       - run: npm run verify

@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { spawn, execFileSync } from "node:child_process";
 import { preparePlatformControlWorkspace } from "./platform-control-workspaces.mjs";
+import { prepareMuseEnvironment } from "./muse-environment.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const registry = JSON.parse(
   readFileSync(join(root, "config/native-harnesses.json"), "utf8"),
@@ -217,6 +218,8 @@ if (!authPresent) {
 }
 Object.assign(env, providerEnv);
 if (providerEnv.OPENCODE_CONFIG) delete env.OPENCODE_CONFIG_CONTENT;
+if (spec.harness === "muse-code")
+  prepareMuseEnvironment(root, state, spec.model, env);
 const child = spawn(command, spec.args, {
   cwd: workspace,
   env,
