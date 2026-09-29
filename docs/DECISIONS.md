@@ -1,3 +1,7 @@
+## September 28, 2026 — Meta Mesh moves to native Muse Code
+
+Joey authorized replacing Meta's Goose harness with native Muse Code while retaining Muse Spark 1.3, its existing franchise identity, workspace, tools and spending limits. This supersedes the September 8 Muse deferral for Meta only. Use the pinned native headless executable through the ACP transport, with franchise-local native login and conversation storage. Preserve prior workspace artifacts and Goose history without claiming they were imported as native Muse conversations. See [deployment and verification evidence](META_MUSE_MIGRATION.md).
+
 ## September 14, 2026 — public live scoreboard and single `main`
 
 Joey directed a public, near-live weekly tracker on black4.ai (`/fantasy-football/`): matchups, scores, standings and each team's starters and bench with per-player points. Feed: a host-side publisher writes a sanitized snapshot to Cloudflare KV every 2–3 minutes during games (slower otherwise); a small Worker serves it at `black4.ai/public/football/*`. MFL is attributed in one line and not linked. This supersedes the September 7 link-only decision in [MFL use boundary](MFL_USE_BOUNDARY.md).
