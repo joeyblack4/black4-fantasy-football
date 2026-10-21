@@ -11,8 +11,9 @@ import {
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { spawn, execFileSync } from "node:child_process";
-import { preparePlatformControlWorkspace } from "./platform-control-workspaces.mjs";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
+import { retirePlatformControlLink } from "./platform-control-workspaces.mjs";
+import { BLACK4_MCP, ensureBlack4Mcp, signInPlan } from "./black4-mcp.mjs";
 import { prepareMuseEnvironment } from "./muse-environment.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const registry = JSON.parse(
@@ -61,11 +62,14 @@ const env = {
   ...spec.env,
   PATH: `${join(root, "tooling/node_modules/.bin")}:${join(root, ".local/tooling/bin")}:${process.env.PATH || ""}`,
 };
-// Shared courier paths do not grant authority; Platform Control authorizes every call.
-env.B4_PLATFORM_CONTROL_HELPER = join(root, "scripts/platform-control.mjs");
-env.B4_PLATFORM_CONTROL_GUIDE = join(root, "docs/PLATFORM_CONTROL.md");
-env.B4_PLATFORM_CONTROL_COMMUNITY =
-  "relay:wss://black4fantasysports.communities.buzz.xyz/";
+// Black 4 is reached only through the Black 4 MCP in the harness's own config
+// (see black4-mcp.mjs); the retired courier's variables are never set.
+for (const key of [
+  "B4_PLATFORM_CONTROL_HELPER",
+  "B4_PLATFORM_CONTROL_GUIDE",
+  "B4_PLATFORM_CONTROL_COMMUNITY",
+])
+  delete env[key];
 if (keyPath && existsSync(keyPath))
   env[spec.credentialEnv] = readFileSync(keyPath, "utf8").trim();
 const providerConfigPath = join(
@@ -94,17 +98,13 @@ if (process.argv.includes("--check")) {
       credential: spec.credential || "native-subscription",
       credentialPresent: authPresent,
       subscriptionVerified: false,
-      platformControlWorkspaceReady: preparePlatformControlWorkspace(
-        workspace,
-        false,
-      ),
-      platformControlHelper: env.B4_PLATFORM_CONTROL_HELPER,
+      black4Mcp: BLACK4_MCP.url,
     }),
   );
   process.exit(existsSync(command) && authPresent ? 0 : 1);
 }
 mkdirSync(workspace, { recursive: true, mode: 0o700 });
-preparePlatformControlWorkspace(workspace);
+retirePlatformControlLink(workspace);
 const localState = (name) => {
   const p = join(state, name);
   mkdirSync(p, { recursive: true, mode: 0o700 });
@@ -220,6 +220,34 @@ Object.assign(env, providerEnv);
 if (providerEnv.OPENCODE_CONFIG) delete env.OPENCODE_CONFIG_CONTENT;
 if (spec.harness === "muse-code")
   prepareMuseEnvironment(root, state, spec.model, env);
+// Last, so no provider override or regenerated settings file can drop it.
+ensureBlack4Mcp(spec.harness, env, workspace);
+if (process.argv.includes("--sign-in")) {
+  const tools = join(root, "tooling/node_modules/.bin");
+  const plan = signInPlan(spec.harness, env, {
+    codex: join(tools, "codex"),
+    opencode: join(tools, "opencode"),
+    gemini: join(tools, "gemini"),
+    qwen: join(tools, "qwen"),
+    grok: join(tools, "grok"),
+    kimi: join(tools, "kimi"),
+    mcode: join(tools, "mcode"),
+    claude: "claude",
+    muse: env.B4_MUSE_BINARY,
+    vibe: join(root, ".local/tooling/bin/vibe"),
+    goose: join(root, ".local/tooling/bin/goose"),
+  });
+  if (plan.before)
+    spawnSync(plan.before[0], plan.before.slice(1), { cwd: workspace, env, stdio: "ignore" });
+  const run = plan.command ?? plan.interactive;
+  if (plan.interactive)
+    console.error(
+      `${id}: in ${spec.harness}, type: ${plan.steps.join(" → ")}. Sign in as ${BLACK4_MCP.signInAs}, then quit the harness.`,
+    );
+  else console.error(`${id}: your browser opens; sign in as ${BLACK4_MCP.signInAs}.`);
+  const result = spawnSync(run[0], run.slice(1), { cwd: workspace, env, stdio: "inherit" });
+  process.exit(result.status ?? 1);
+}
 const child = spawn(command, spec.args, {
   cwd: workspace,
   env,

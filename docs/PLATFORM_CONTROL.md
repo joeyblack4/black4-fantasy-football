@@ -1,46 +1,49 @@
-# Black4 business connections from Fantasy
+# Black 4 from Fantasy: the Black 4 MCP
 
-Every enrolled Fantasy agent uses the same managed Black4 business connections through Platform Control, inheriting the configured Black4 policies. Access still requires your existing Buzz identity, enrollment, current membership in the requested channel, and a permitted operation on a verified Black4 resource. Joining an open channel does not enroll you. Other customers' connections and resources remain outside this authority, including customer resources reachable by a shared provider credential.
+Every owner reaches Black 4 the same way any agent does: through the Black 4
+MCP (`black4`, `https://api.black4.ai/mcp`), already configured in your own
+harness. It is signed in as the Fantasy Football customer, so it reaches only
+the Fantasy Football business (`business-fantasy-football`) and never another
+customer or Black 4's own platform administration. There is no local helper,
+courier, skill folder or provider key for Black 4 on this Mac.
 
-Start from your native workspace, using the ID of the actual Fantasy conversation you are working in:
+## Skills
 
-```sh
-node ./platform-control discover --channel CHANNEL_ID
-```
+Black 4's methods for the league live in Platform Control. Call
+`list_skills` with `businessId: "business-fantasy-football"`. That list is the
+only source of Black 4 skills. When a listed skill's description fits your
+task (for example `fantasy-lineup-decision` before a start/sit choice), load it
+with `get_skill` before you start, read the files it lists with
+`get_skill_file`, and follow it. Pass your own name as `agent` and your model
+as `model`, so the receipt shows who loaded which version. An empty list means
+no skill is turned on, not permission to use another source.
 
-Always supply `--channel` for each call. Obtain it from the current Buzz message context or the Buzz channel list. There is no global current-channel file or default channel. Enrollment works across open and private channels where both your current membership and Platform Control's observer access can be verified. Missing observer access is an infrastructure blocker to report with the channel ID. The operator completed 24 private-stream observer invitations on September 11, 2026; every request still checks current membership. Direct-message channels have fixed membership and cannot admit the observer through the current relay, so use an authorized stream for integration requests. Black4 information shared in an open conversation is visible there.
+## League tools
 
-## Discover the current authority
+`discover_business_tools` shows Fantasy Football's connections (for example
+its X and Meta accounts and Google Analytics through Treg), their read/write
+access and selected resources. Call a connection with `call_provider`, and Treg
+tools with `treg_search` and `treg_call`. Business publishing and purchases
+follow Fantasy Football's configured policies; changes that need a person go
+to Reviews (`start_review`), where people decide. Never use local credentials
+or another route to get around a refusal, a pending review or a missing
+connection: report it.
 
-Use the live discovery response for connection identifiers, resource boundaries, allowed operations and approval policies. `scopedOperations` describes the resource rules and action policy; endpoint availability also follows the existing transport rules. Only `examples` and copyable commands are examples for constructing a request, not an exhaustive tool list or a separate permission grant. A connected tool may still be blocked by resource verification, provider authentication, subscription/credit limits or missing channel access. Report the actual status and error code; do not describe a listed connector as successfully tested.
+## When the MCP is unavailable
 
-The managed path supports raw requests and native named tools where the server advertises them:
+If the `black4` server is missing, asks you to sign in, or refuses, say so once
+in your conversation and continue your football work without it. Joey signs
+the harness in again (`node scripts/mcp-sign-in.mjs <owner>` on the Fantasy
+Mac). Do not paste tokens or keys anywhere.
 
-```sh
-node ./platform-control --channel CHANNEL_ID --catalog CATALOG_ID --connector CONNECTOR --method GET --endpoint RESOURCE_PATH
-node ./platform-control --channel CHANNEL_ID --catalog CATALOG_ID --connector CONNECTOR --tool TOOL_NAME --arguments '{"argument":"value"}'
-```
+## Operator setup
 
-Use `--params` for JSON query parameters and `--body` for a JSON request body. LinkedIn requests also require `--connection CONNECTION_ID` from discovery, including its managed media prepare/transfer operations. A reporting operation may use POST without changing business data; follow the operation's server policy. For provider writes, preserve the exact intended payload and use a stable `--idempotency-key` when supported. MCP, warehouse and shared social-content commands are usable only when current discovery exposes their authorized surface and resource boundary. Inherited business permission does not make an unsupported transport or unverified resource safe to use.
-
-## Approvals and execution results
-
-Automatic operations run under the existing Black4 policy. Operations marked approval-required use Platform Control's existing approval record. An HTTP 202 response with `approval.status: "pending"` and `approval.receiptId` means the request is waiting; it is not provider execution, even if the helper exits successfully. Preserve the receipt ID and exact request for operator review. A denial or missing approval interface is a blocker, not a reason to submit the same action through another route.
-
-After the operator approves that request, retry the same catalog, channel, operation, parameters and body with `--approval-receipt RECEIPT_ID`. For MCP, pending approvals appear as JSON-RPC error `-32003` with the receipt in `error.data.approval`; resend the exact `tools/call` message, including its JSON-RPC ID and arguments, after approval. The helper attaches the receipt only to `tools/call`, never to initialization, notifications or tool discovery. The receipt belongs to the requesting identity and exact request; the server rechecks current policy, membership, expiry and prior use. Do not automatically replay a pending request or treat approval as proof of execution. Report completion only from the execution result and its receipt. If the result is uncertain, read back the intended provider object before considering a retry.
-
-## Use the managed connection
-
-Use your native shell/tool facilities; the helper works independently of harness-specific automatic discovery. `B4_PLATFORM_CONTROL_HELPER` and `B4_PLATFORM_CONTROL_GUIDE` point to the same installed files in every launcher environment. `node ./platform-control --check` checks the pinned bundle and local identity/configuration readiness without a network call.
-
-The courier signs with `BUZZ_PRIVATE_KEY` supplied by Fantasy Buzz. It never loads another identity or forwards provider/operator secrets. Do not paste keys into commands, chats or files. The API origin and Fantasy community are fixed by operator configuration. Use Platform Control for Black4 integrations; do not load local provider credentials, reuse another customer's binding, or call the provider directly to bypass a denial, pending approval or unsupported managed operation. Native research, local development and independent football decisions remain available under the owner charter.
-
-No new spending, subscription, publishing or deployment permission is created by installing the helper. Those actions follow the inherited Black4 policy and Joey's current instructions. Report provider credit/authentication failures without changing billing or credentials on your own.
-
-## Operator setup and verification
-
-The upstream bundle and HTTPS origin are pinned in `config/platform-control-helper.json`. No Buzz fork or provider credential copy is involved. An operator can override only the API origin using the ignored `.local/platform-control.json`, as `{"baseUrl":"https://platform-control.example"}`. The courier does not trust inherited Commerce `PLATFORM_CONTROL_URL` or `NOSTR_PRIVATE_KEY` values. To update the bundle, extract the current generated Platform Control helper string, review changes, replace the vendored file and update the checksum together.
-
-Run `node scripts/platform-control-workspaces.mjs --install` to supply links to all existing native workspaces without starting models. The native launcher installs the same links on future starts. Shared `START_HERE.md` instructions link this guide. New owners need one server enrollment using their existing Buzz public key; workspace setup cannot grant authority.
-
-Verify current discovery, membership, a scoped provider read and the relevant approval/denial paths before reporting live access. Preserve deliberate runtime stops and existing spend limits. Tests and `--check` establish helper readiness; signed API receipts establish the operations actually exercised. Keep pending observer access, unsupported resources and provider failures explicit.
+`scripts/native-harness.mjs` writes the `black4` entry into each owner's own
+harness config on every start (`scripts/black4-mcp.mjs`, server in
+`config/black4-mcp.json`). Each harness keeps its own OAuth sign-in in its own
+franchise home; no token is shared or copied between owners. Joey signs each
+owner in once with `node scripts/mcp-sign-in.mjs <owner>`, as
+joeysterling22@gmail.com, never as Black 4 staff. No channel-bound header is
+sent: a customer sign-in reaches one business only.
+`node scripts/platform-control-workspaces.mjs --install` removes the retired
+`platform-control` link from every workspace and keeps this guide linked.
