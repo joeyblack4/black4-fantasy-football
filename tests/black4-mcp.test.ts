@@ -9,15 +9,13 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-// @ts-expect-error plain ESM module without types
-import {
-  BLACK4_MCP,
-  configTarget,
-  ensureBlack4Mcp,
-  signInPlan,
-} from "../scripts/black4-mcp.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+// The launcher modules are plain ESM without types.
+const modulePath: string = join(root, "scripts/black4-mcp.mjs");
+const { BLACK4_MCP, configTarget, ensureBlack4Mcp, signInPlan } = (await import(
+  modulePath
+)) as any;
 const registry = JSON.parse(
   readFileSync(join(root, "config/native-harnesses.json"), "utf8"),
 );
