@@ -44,7 +44,10 @@ function mergeJson(path, key, entry, base = {}) {
 function appendToml(path, marker, block) {
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   if (current.split("\n").some((line) => line.trim() === marker)) return false;
-  write(path, `${current}${current && !current.endsWith("\n") ? "\n" : ""}\n${block}`);
+  write(
+    path,
+    `${current}${current && !current.endsWith("\n") ? "\n" : ""}\n${block}`,
+  );
   return true;
 }
 
@@ -87,7 +90,11 @@ export function ensureBlack4Mcp(harness, env, workspace) {
   const path = configTarget(harness, env);
   switch (harness) {
     case "codex":
-      appendToml(path, `[mcp_servers.${name}]`, `[mcp_servers.${name}]\nurl = "${url}"\n`);
+      appendToml(
+        path,
+        `[mcp_servers.${name}]`,
+        `[mcp_servers.${name}]\nurl = "${url}"\n`,
+      );
       break;
     case "grok-build":
       appendToml(
@@ -114,7 +121,10 @@ export function ensureBlack4Mcp(harness, env, workspace) {
         const trust = join(env.GEMINI_CLI_HOME, ".gemini/trustedFolders.json");
         const folders = readJson(trust);
         if (folders[workspace] !== "TRUST_FOLDER")
-          write(trust, `${JSON.stringify({ ...folders, [workspace]: "TRUST_FOLDER" }, null, 2)}\n`);
+          write(
+            trust,
+            `${JSON.stringify({ ...folders, [workspace]: "TRUST_FOLDER" }, null, 2)}\n`,
+          );
       }
       break;
     case "qwen-code":
@@ -124,13 +134,21 @@ export function ensureBlack4Mcp(harness, env, workspace) {
       mergeJson(path, "mcpServers", { url });
       break;
     case "muse-code":
-      mergeJson(path, "mcpServers", { type: "http", url }, { schema_version: 1 });
+      mergeJson(
+        path,
+        "mcpServers",
+        { type: "http", url },
+        { schema_version: 1 },
+      );
       break;
     case "minimax-code":
       mergeJson(path, "mcpServers", { url, auth: { type: "oauth2" } });
       break;
     case "goose":
-      if (!existsSync(path) || !readFileSync(path, "utf8").includes(`  ${name}:`))
+      if (
+        !existsSync(path) ||
+        !readFileSync(path, "utf8").includes(`  ${name}:`)
+      )
         appendGooseExtension(path);
       break;
     case "opencode":
@@ -165,10 +183,19 @@ function appendGooseExtension(path) {
   ].join("\n");
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   if (/^extensions:\s*$/m.test(current))
-    write(path, current.replace(/^extensions:\s*$/m, `extensions:\n${block.trimEnd()}`));
+    write(
+      path,
+      current.replace(/^extensions:\s*$/m, `extensions:\n${block.trimEnd()}`),
+    );
   else if (/^extensions:/m.test(current))
-    throw Error(`${path}: extensions is not a block mapping; add the Black 4 MCP by hand`);
-  else write(path, `${current}${current && !current.endsWith("\n") ? "\n" : ""}extensions:\n${block}`);
+    throw Error(
+      `${path}: extensions is not a block mapping; add the Black 4 MCP by hand`,
+    );
+  else
+    write(
+      path,
+      `${current}${current && !current.endsWith("\n") ? "\n" : ""}extensions:\n${block}`,
+    );
 }
 
 /**
@@ -192,19 +219,34 @@ export function signInPlan(harness, env, binaries) {
         before: [binaries.vibe, "mcp", "remove", name],
       };
     case "claude-code":
-      return { interactive: [binaries.claude], steps: ["/mcp", `select ${name}`, "Authenticate"] };
+      return {
+        interactive: [binaries.claude],
+        steps: ["/mcp", `select ${name}`, "Authenticate"],
+      };
     case "gemini-cli":
       return { interactive: [binaries.gemini], steps: [`/mcp auth ${name}`] };
     case "qwen-code":
       return { interactive: [binaries.qwen], steps: [`/mcp auth ${name}`] };
     case "grok-build":
-      return { interactive: [binaries.grok], steps: ["/mcps", `select ${name}`, "press i"] };
+      return {
+        interactive: [binaries.grok],
+        steps: ["/mcps", `select ${name}`, "press i"],
+      };
     case "kimi-code":
-      return { interactive: [binaries.kimi], steps: [`/mcp-config login ${name}`] };
+      return {
+        interactive: [binaries.kimi],
+        steps: [`/mcp-config login ${name}`],
+      };
     case "goose":
-      return { interactive: [binaries.goose, "session"], steps: ["the browser opens when the session connects"] };
+      return {
+        interactive: [binaries.goose, "session"],
+        steps: ["the browser opens when the session connects"],
+      };
     case "minimax-code":
-      return { interactive: [binaries.mcode], steps: ["/mcp", `select ${name}`, "sign in"] };
+      return {
+        interactive: [binaries.mcode],
+        steps: ["/mcp", `select ${name}`, "sign in"],
+      };
     default:
       throw Error(`No sign-in for harness ${harness}`);
   }

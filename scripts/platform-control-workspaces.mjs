@@ -5,7 +5,13 @@
  * Black 4 MCP in their own harness (scripts/black4-mcp.mjs). Never starts or
  * restarts a native harness.
  */
-import { lstatSync, readFileSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+  lstatSync,
+  readFileSync,
+  readlinkSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -15,7 +21,9 @@ const retiredCourier = join(root, "scripts/platform-control.mjs");
 function linkTarget(path, workspace) {
   try {
     const stat = lstatSync(path);
-    return stat.isSymbolicLink() ? resolve(workspace, readlinkSync(path)) : "not-a-link";
+    return stat.isSymbolicLink()
+      ? resolve(workspace, readlinkSync(path))
+      : "not-a-link";
   } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -31,17 +39,23 @@ export function retirePlatformControlLink(workspace, install = true) {
   const docTarget = linkTarget(doc, workspace);
   if (docTarget !== null && docTarget !== guide)
     throw Error(`Black 4 guide link collision: ${doc}`);
-  if (docTarget === null && install) symlinkSync(relative(workspace, guide), doc);
+  if (docTarget === null && install)
+    symlinkSync(relative(workspace, guide), doc);
   return {
     courierRetired: linkTarget(courier, workspace) !== retiredCourier,
     guideLinked: linkTarget(doc, workspace) === guide,
   };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   if (!process.argv.includes("--install") && !process.argv.includes("--check"))
     throw Error("Pass --install or --check");
-  const registry = JSON.parse(readFileSync(join(root, "config/native-harnesses.json"), "utf8"));
+  const registry = JSON.parse(
+    readFileSync(join(root, "config/native-harnesses.json"), "utf8"),
+  );
   const results = Object.entries(registry.franchises).map(([id, spec]) => ({
     id,
     harness: spec.harness,
@@ -51,5 +65,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     ),
   }));
   console.log(JSON.stringify(results, null, 2));
-  if (results.some((row) => !row.courierRetired || !row.guideLinked)) process.exitCode = 1;
+  if (results.some((row) => !row.courierRetired || !row.guideLinked))
+    process.exitCode = 1;
 }

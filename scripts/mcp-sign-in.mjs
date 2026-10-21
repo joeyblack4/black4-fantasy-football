@@ -15,20 +15,33 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const registry = JSON.parse(readFileSync(join(root, "config/native-harnesses.json"), "utf8"));
+const registry = JSON.parse(
+  readFileSync(join(root, "config/native-harnesses.json"), "utf8"),
+);
 const ids = Object.keys(registry.franchises);
 const arg = process.argv[2];
 
 if (!arg || arg === "--list") {
-  for (const id of ids) console.log(`${id.replace(/^b4-/, "").padEnd(10)} ${registry.franchises[id].harness}`);
+  for (const id of ids)
+    console.log(
+      `${id.replace(/^b4-/, "").padEnd(10)} ${registry.franchises[id].harness}`,
+    );
   process.exit(arg ? 0 : 2);
 }
-const id = ids.find((candidate) => candidate === arg || candidate === `b4-${arg}`);
+const id = ids.find(
+  (candidate) => candidate === arg || candidate === `b4-${arg}`,
+);
 if (!id) {
-  console.error(`Unknown owner ${arg}; one of: ${ids.map((x) => x.replace(/^b4-/, "")).join(", ")}`);
+  console.error(
+    `Unknown owner ${arg}; one of: ${ids.map((x) => x.replace(/^b4-/, "")).join(", ")}`,
+  );
   process.exit(2);
 }
-const result = spawnSync(process.execPath, [join(root, "scripts/native-harness.mjs"), id, "--sign-in"], {
-  stdio: "inherit",
-});
+const result = spawnSync(
+  process.execPath,
+  [join(root, "scripts/native-harness.mjs"), id, "--sign-in"],
+  {
+    stdio: "inherit",
+  },
+);
 process.exit(result.status ?? 1);

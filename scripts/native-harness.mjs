@@ -238,14 +238,25 @@ if (process.argv.includes("--sign-in")) {
     goose: join(root, ".local/tooling/bin/goose"),
   });
   if (plan.before)
-    spawnSync(plan.before[0], plan.before.slice(1), { cwd: workspace, env, stdio: "ignore" });
+    spawnSync(plan.before[0], plan.before.slice(1), {
+      cwd: workspace,
+      env,
+      stdio: "ignore",
+    });
   const run = plan.command ?? plan.interactive;
   if (plan.interactive)
     console.error(
       `${id}: in ${spec.harness}, type: ${plan.steps.join(" → ")}. Sign in as ${BLACK4_MCP.signInAs}, then quit the harness.`,
     );
-  else console.error(`${id}: your browser opens; sign in as ${BLACK4_MCP.signInAs}.`);
-  const result = spawnSync(run[0], run.slice(1), { cwd: workspace, env, stdio: "inherit" });
+  else
+    console.error(
+      `${id}: your browser opens; sign in as ${BLACK4_MCP.signInAs}.`,
+    );
+  const result = spawnSync(run[0], run.slice(1), {
+    cwd: workspace,
+    env,
+    stdio: "inherit",
+  });
   process.exit(result.status ?? 1);
 }
 const child = spawn(command, spec.args, {
