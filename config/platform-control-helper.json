@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "helperVersion": "2026-09-11.business-inheritance-connection",
-  "sha256": "cf140974e98cff77a2e8ddf44289652a0006c7b3851efaec72cd262cd23466a5",
-  "source": "Black4 Platform Control channel-agent-helper-script.ts",
-  "communityId": "relay:wss://black4fantasysports.communities.buzz.xyz/",
-  "relayUrl": "wss://black4fantasysports.communities.buzz.xyz",
-  "baseUrl": "https://api.black4.ai"
-}
