@@ -64,14 +64,21 @@ test("Muse keeps native memory and settings while excluding PAYG credentials", (
   }
 });
 
-test("native launcher preserves argument boundaries and only changes execution posture", () => {
+test("native launcher preserves arguments and roots execution in its franchise despite the client cwd", () => {
   const dir = mkdtempSync(join(tmpdir(), "muse-launch-"));
   try {
     const fake = join(dir, "fake-muse");
     writeFileSync(fake, '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o700 });
+    const workspace = join(dir, "franchise workspace");
+    mkdirSync(workspace);
     const launch = (args) =>
       spawnSync(resolve("scripts/muse-native"), args, {
-        env: { ...process.env, B4_MUSE_BINARY: fake },
+        cwd: dir,
+        env: {
+          ...process.env,
+          B4_MUSE_BINARY: fake,
+          B4_NATIVE_WORKSPACE: workspace,
+        },
         encoding: "utf8",
       });
     const prompt = "One literal prompt; $(do-not-execute) with spaces";
@@ -81,6 +88,9 @@ test("native launcher preserves argument boundaries and only changes execution p
         "exec",
         "--yolo",
         "--no-foreign-personal-context",
+        "--workspace",
+        workspace,
+        "--allow-workspace-switch",
         "--session-id",
         "same-session",
         prompt,
@@ -88,6 +98,21 @@ test("native launcher preserves argument boundaries and only changes execution p
       ].join("\n"),
     );
     assert.equal(launch(["login"]).stdout, "login\n");
+    const fallback = spawnSync(
+      resolve("scripts/muse-native"),
+      ["exec", prompt],
+      {
+        cwd: dir,
+        env: { B4_MUSE_BINARY: fake },
+        encoding: "utf8",
+      },
+    );
+    assert.equal(fallback.status, 0);
+    assert.ok(
+      fallback.stdout.includes(
+        `--workspace\n${resolve("franchises/meta/workspace")}\n`,
+      ),
+    );
     assert.equal(
       launch(["export", "--session", "same-session"]).stdout,
       "export\n--session\nsame-session\n",
