@@ -11,6 +11,7 @@ const { prepareMuseEnvironment } = await import(
 );
 const state = mkdtempSync(join(tmpdir(), "muse-synthetic-"));
 const env = { ...process.env };
+env.B4_NATIVE_WORKSPACE = state;
 prepareMuseEnvironment(root, state, "muse-spark-1.3", env);
 env.B4_MUSE_TEST_BINARY = env.B4_MUSE_BINARY;
 const echo = join(state, "echo-muse");

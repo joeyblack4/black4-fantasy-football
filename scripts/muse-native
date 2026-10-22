@@ -4,6 +4,10 @@ set -eu
 : "${B4_MUSE_BINARY:?Missing pinned Muse binary}"
 if [ "${1:-}" = exec ]; then
   shift
-  exec "$B4_MUSE_BINARY" exec --yolo --no-foreign-personal-context "$@"
+  # Buzz supplies its own cwd to ACP sessions. Keep native tools rooted in the
+  # franchise workspace even when that session was created from ~/.buzz.
+  ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+  WORKSPACE=${B4_NATIVE_WORKSPACE:-"$ROOT/franchises/meta/workspace"}
+  exec "$B4_MUSE_BINARY" exec --yolo --no-foreign-personal-context --workspace "$WORKSPACE" --allow-workspace-switch "$@"
 fi
 exec "$B4_MUSE_BINARY" "$@"

@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { spawn, execFileSync } from "node:child_process";
 import { preparePlatformControlWorkspace } from "./platform-control-workspaces.mjs";
 import { prepareMuseEnvironment } from "./muse-environment.mjs";
+import { nativeWorkspaceInput } from "./native-workspace-input.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const registry = JSON.parse(
   readFileSync(join(root, "config/native-harnesses.json"), "utf8"),
@@ -134,9 +135,13 @@ switch (spec.harness) {
     break;
   }
   case "claude-code":
-    env.CLAUDE_CONFIG_DIR = localState("claude");
+    env.CLAUDE_CONFIG_DIR = env.B4_CLAUDE_CONFIG_DIR || localState("claude");
     // Copy native subscription credentials into this franchise, never mutate the personal keychain.
-    if (!existsSync(join(env.CLAUDE_CONFIG_DIR, ".credentials.json"))) {
+    // An explicitly signed-in native home already owns its keychain credentials.
+    if (
+      !env.B4_CLAUDE_CONFIG_DIR &&
+      !existsSync(join(env.CLAUDE_CONFIG_DIR, ".credentials.json"))
+    ) {
       try {
         const nativeAuth = execFileSync(
           "/usr/bin/security",
@@ -223,14 +228,24 @@ if (spec.harness === "muse-code")
 const child = spawn(command, spec.args, {
   cwd: workspace,
   env,
-  stdio: "inherit",
+  stdio: ["pipe", "inherit", "inherit"],
+});
+process.stdin.setEncoding("utf8");
+const workspaceInput = nativeWorkspaceInput(workspace);
+process.stdin.pipe(workspaceInput).pipe(child.stdin);
+child.stdin.on("error", (error) => {
+  if (error.code !== "EPIPE") console.error(`${id}: ${error.message}`);
 });
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
   process.on(signal, () => child.kill(signal));
 child.on("error", (error) => {
   console.error(`${id}: ${error.message}`);
+  workspaceInput.destroy();
+  process.stdin.destroy();
   process.exitCode = 1;
 });
 child.on("exit", (code, signal) => {
+  workspaceInput.destroy();
+  process.stdin.destroy();
   process.exitCode = code ?? (signal ? 1 : 0);
 });
