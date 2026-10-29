@@ -81,6 +81,23 @@ export function createApiServer(
   options: { loadMfl?: typeof loadMflAdapter } = {},
 ) {
   const mflLoader = options.loadMfl ?? loadMflAdapter;
+  // Wait before borrowing connections: the active MFL request also needs pool
+  // connections for adapter loading and its journal. Database locks still
+  // serialize this API with other processes.
+  const mflRequests = new Map<string, Promise<void>>();
+  async function acquireMflRequest(leagueId: string) {
+    const previous = mflRequests.get(leagueId);
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mflRequests.set(leagueId, current);
+    await previous;
+    return () => {
+      release();
+      if (mflRequests.get(leagueId) === current) mflRequests.delete(leagueId);
+    };
+  }
   async function withMfl<T>(
     actor: Principal,
     work: (adapter: Awaited<ReturnType<typeof loadMflAdapter>>) => Promise<T>,
@@ -131,6 +148,7 @@ export function createApiServer(
   }
   return createServer(async (req, res) => {
     let releaseMutationLock: (() => Promise<void>) | undefined;
+    let releaseMflRequest: (() => void) | undefined;
     res.setHeader("cache-control", "no-store");
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("referrer-policy", "no-referrer");
@@ -176,6 +194,18 @@ export function createApiServer(
         return res.end(data);
       }
       const actor = await authenticate(db, req.headers.authorization);
+      if (
+        (req.method === "POST" &&
+          [
+            "/v1/football/read",
+            "/v1/football/commands",
+            "/v1/football/reconcile",
+          ].includes(url.pathname)) ||
+        (req.method === "GET" &&
+          /^\/v1\/leagues\/[^/]+\/scores\/\d+$/.test(url.pathname))
+      ) {
+        releaseMflRequest = await acquireMflRequest(actor.leagueId);
+      }
       // Share the session-transition lock for the whole mutation, including
       // upstream writes. Opening conversation mode waits for prior requests.
       if (
@@ -739,7 +769,11 @@ export function createApiServer(
           "Request failed; no success receipt was returned. Retry only with the same idempotency key.",
       });
     } finally {
-      await releaseMutationLock?.();
+      try {
+        await releaseMutationLock?.();
+      } finally {
+        releaseMflRequest?.();
+      }
     }
   });
 }

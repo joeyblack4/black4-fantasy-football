@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, expect, it } from "vitest";
 import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { testDb } from "./helpers.js";
 import { LeagueService } from "../src/league/index.js";
 import { RuntimeStore } from "../src/runtime/index.js";
@@ -108,6 +109,63 @@ afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   await f?.close();
 });
+
+it("finishes simultaneous football reads and writes beyond the database pool size", async () => {
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  let active = 0;
+  let maximumActive = 0;
+  let completed = 0;
+  const finish = async () => {
+    await f.db.query("SELECT 1");
+    active--;
+    completed++;
+    return { synthetic: true };
+  };
+  server = createApiServer(f.db, {
+    loadMfl: async () => {
+      active++;
+      maximumActive = Math.max(maximumActive, active);
+      // Let competing requests arrive before the active request needs another
+      // connection, reproducing the live pool-starvation failure.
+      await delay(20);
+      await f.db.query("SELECT 1");
+      return {
+        read: finish,
+        execute: finish,
+        reconcile: finish,
+      } as unknown as MflAdapter;
+    },
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const results = await Promise.all(
+    Array.from({ length: 30 }, (_, index) => {
+      if (index % 3 === 0)
+        return request("/v1/football/read", ownerToken, {
+          type: "calendar",
+          week: 8,
+        });
+      if (index % 3 === 1)
+        return request("/v1/football/commands", peerToken, {
+          idempotencyKey: `concurrent-${index}`,
+          action: { type: "lineup", week: 8, starters: ["01234"] },
+        });
+      return request("/v1/football/reconcile", ownerToken, {
+        idempotencyKey: `concurrent-${index}`,
+      });
+    }),
+  );
+  expect(results.every((result) => result.status === 200)).toBe(true);
+  expect(completed).toBe(30);
+  expect(maximumActive).toBe(1);
+  // An invalid request must also release its place for the following request.
+  const afterError = await Promise.all([
+    request("/v1/football/commands", ownerToken, { invalid: true }),
+    request("/v1/football/read", ownerToken, { type: "capabilities" }),
+  ]);
+  expect(afterError.map((result) => result.status)).toEqual([400, 200]);
+}, 10000);
 
 it("accepts new reads through the owner binding and rejects injected authority before calling MFL", async () => {
   for (const query of [
