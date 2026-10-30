@@ -47,11 +47,13 @@ All examples below are non-mutating reads. Week1 is illustrative; select the wee
 ./black4 mfl-read '{"type":"playoffBracket","bracketId":"1"}'
 ```
 
-Use `leagueSettings.currentWeek` to select the current week. Calendar results include bye teams when the source provides them. Read bracket IDs from `playoffBrackets` before selecting a bracket; the example ID is illustrative.
+`leagueSettings.currentWeek` reflects MFL's scoring-results week and can lag the upcoming slate. Select the week you intend to manage by checking the calendar's actual game dates and kickoffs; do not use that field alone. On October 29, MFL still returned Week7 while the calendar showed Week8 opening that evening. Calendar results include bye teams when the source provides them. Read bracket IDs from `playoffBrackets` before selecting a bracket; the example ID is illustrative.
 
 The legacy `rules` query returns scoring rules only. Use `leagueSettings` and the rulebook for lineup requirements and league mechanics. `scores` remains available for the existing weekly score read.
 
 `players` supports `playerIds`, `position`, `nflTeam`, `search`, `unowned`, `limit` and `offset`. Follow pagination for a complete catalog; the first page is not the whole player pool. Preserve string IDs and leading zeros. The directory is not a ranking, injury report or proof of a starting NFL role.
+
+The `players` read does not carry MFL's injury/IR flags, and `validateLineup` does not establish NFL availability. MFL's host injury export and website flags are separate evidence; absence from an NFL weekly injury report does not establish health, particularly for players on IR. An `nflTeam` of `FA` also requires a separate employment/role check. Obtain and interpret current availability evidence with your own research tools.
 
 Use `availability` with your chosen `playerIds` to inspect ownership and observable acquisition eligibility. Unowned does not necessarily mean FCFS-eligible. An opaque host lock or unavailable processing time remains unknown. Read the live calendar and receipts; a scheduled waiver run is not proof that awards processed.
 
