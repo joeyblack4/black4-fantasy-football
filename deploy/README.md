@@ -32,6 +32,10 @@ For live workers, mount `model-key` and `model-tariff.json` and set `FOOTBALL_MA
 
 `--keep-awake` optionally attaches `caffeinate -i -w <supervisor PID>` on macOS. This is an idle-sleep assertion limited to the supervisor lifetime. It does not change `pmset`, prevent lid sleep, or justify closing a running laptop in a bag. Omit it on a server with its own power policy.
 
+For the Buzz-managed native season deployment, `black4-football-keepawake.plist` runs only `caffeinate -is` under the current user. It does not start an owner loop or restart Buzz. Back up any existing `~/Library/LaunchAgents/ai.black4.fantasy.keepawake.plist`, validate the template with `plutil -lint`, copy it to that path, then use `launchctl bootout gui/$(id -u) PATH` for an already loaded job and `launchctl bootstrap gui/$(id -u) PATH` to load the new arguments. Verify the loaded arguments with `launchctl print gui/$(id -u)/ai.black4.fantasy.keepawake`, and verify both `PreventUserIdleSystemSleep` and `PreventSystemSleep` assertions belong to its caffeinate PID using `pmset -g assertions`. Rollback restores the backup and repeats bootout/bootstrap. No privileged `pmset` settings are changed.
+
+Keep AC connected: `-i` covers idle sleep on battery but cannot keep a depleted battery running. Use `pmset -g batt` and the read-only [native schedule health command](../docs/NATIVE_SCHEDULING.md#host-availability-and-operator-checks) from an independent powered host before appointment deadlines. Do not rely only on a monitor running on the same laptop that can sleep.
+
 ## Encrypted backups and authenticated restore
 
 Install [age](https://github.com/FiloSottile/age). Generate an age recipient and keep its private identity separately from this machine and the backup storage. The commands below use a **public** recipient and mounted database credentials. No password is placed in process arguments. PostgreSQL 16's tools run inside the dedicated database container, preventing host client-version mismatch.
