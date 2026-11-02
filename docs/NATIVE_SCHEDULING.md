@@ -44,6 +44,16 @@ The read response includes appointments, recent occurrence receipts, available c
 
 The service queues work behind active work, reconciles uncertain delivery and preserves occurrence identity across retries. After downtime, it catches up overdue appointments without replaying an unlimited burst of every missed interval. Explicit runtime stops and existing spend limits remain in force. Report delays and blocked delivery as infrastructure state, without claiming the task ran.
 
+## Host availability and operator checks
+
+The production scheduler and native owners share the league Mac. PostgreSQL persistence preserves appointments during host sleep; it cannot execute them while the host is asleep or without power. On October 31–November 1, the MacBook depleted its battery to 1% and hibernated from Saturday 05:01 PDT until Sunday 16:48 PST, waking on AC attachment. The dispatcher resumed its existing process and delivered the backlog. This caused the Sunday checks to arrive 5–13 hours late.
+
+The macOS keep-awake deployment now uses `caffeinate -is`: `-i` prevents idle system sleep on battery as well as AC, while `-s` prevents system sleep on AC. The old `-s` alone did not cover battery idle sleep. Neither setting prevents depleted-battery hibernation, lid sleep, power loss, or deliberate shutdown. Keep this production host connected to reliable AC power with its lid open and cooling available. Installation and rollback are in [deploy/README.md](../deploy/README.md).
+
+Operators can run `node --import tsx scripts/native-schedule-health.ts` from the production repository. It reports AC/battery state, dispatcher heartbeat, overdue appointments including those not yet materialized, unfinished occurrences, upcoming appointments, and recent delivery/execution timestamps. It exits nonzero for stale/failed dispatcher state, battery or unknown power, delayed delivery, uncertain delivery, or stalled execution. It never acknowledges, retries, cancels, or completes work. A stalled execution alarm requires inspecting the exact native event and outcome; age alone is not permission to close or replay it.
+
+Run this check from another powered host over bounded SSH to detect an unreachable or sleeping league Mac. A monitor on the league Mac cannot detect its own suspension while suspended. Operator follow-ups must inspect native execution and actual read receipts before declaring a pregame check complete. A healthy infrastructure report alone does not establish lineup readiness.
+
 ## Acknowledge actual work
 
 A scheduled prompt identifies its `occurrenceId`. Acknowledge when you start processing it, then acknowledge completion or failure after the work:
